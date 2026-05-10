@@ -1,0 +1,676 @@
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { VendorMemberTaskScope } from '@/components/vendor/VendorMemberTaskScope'
+import { VendorTaskAssignment } from '@/components/vendor/VendorTaskAssignment'
+import { useTaskStore } from '@/store/taskStore'
+import { useProjectStore } from '@/store/projectStore'
+import type {
+  Project,
+  MemberWithProfile,
+  Task,
+  UserPermissions,
+  UserRole,
+} from '@/types'
+
+interface ProjectSettingsProps {
+  project: Project
+  members: MemberWithProfile[]
+  tasks: Task[]
+  currentUserId: string
+  permissions: UserPermissions
+}
+
+// ロールは招待フォームで選択可能なものに制限する
+const INTERNAL_ROLES: UserRole[] = ['editor', 'viewer', 'limited_viewer']
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  owner: 'オーナー',
+  editor: '編集者',
+  viewer: '閲覧者',
+  limited_viewer: '限定閲覧者',
+  vendor: 'ベンダー',
+}
+
+export function ProjectSettings({
+  project,
+  members: initialMembers,
+  tasks,
+  currentUserId,
+  permissions,
+}: ProjectSettingsProps) {
+  const router = useRouter()
+
+  const [infoName, setInfoName] = useState(project.name)
+  const [infoDescription, setInfoDescription] = useState(project.description ?? '')
+  const [infoColor, setInfoColor] = useState(project.color)
+  const [infoClientName, setInfoClientName] = useState(project.client_name ?? '')
+  const [infoProjectNumber, setInfoProjectNumber] = useState(project.project_number ?? '')
+  const [infoStartDate, setInfoStartDate] = useState(project.start_date ?? '')
+  const [infoEndDate, setInfoEndDate] = useState(project.end_date ?? '')
+  const [infoLoading, setInfoLoading] = useState(false)
+  const [infoError, setInfoError] = useState<string | null>(null)
+  const [infoSuccess, setInfoSuccess] = useState<string | null>(null)
+
+  const [members, setMembers] = useState<MemberWithProfile[]>(initialMembers)
+  const [roleChangingIds, setRoleChangingIds] = useState<Set<string>>(new Set())
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  const [globalError, setGlobalError] = useState<string | null>(null)
+
+  // 社内メンバー招待フォーム
+  const [internalEmail, setInternalEmail] = useState('')
+  const [internalRole, setInternalRole] = useState<UserRole>('viewer')
+  const [internalInviting, setInternalInviting] = useState(false)
+  const [internalError, setInternalError] = useState<string | null>(null)
+  const [internalSuccess, setInternalSuccess] = useState<string | null>(null)
+
+  // ベンダー招待フォーム
+  const [vendorEmail, setVendorEmail] = useState('')
+  const [vendorTaskIds, setVendorTaskIds] = useState<Set<string>>(new Set())
+  const [vendorInviting, setVendorInviting] = useState(false)
+  const [vendorError, setVendorError] = useState<string | null>(null)
+  const [vendorSuccess, setVendorSuccess] = useState<string | null>(null)
+
+  const updateTask = useTaskStore((s) => s.updateTask)
+  const setStoreMembers = useProjectStore((s) => s.setMembers)
+
+  const vendorMembers = members.filter((m) => m.role === 'vendor')
+
+  async function handleInternalInvite() {
+    if (!internalEmail.trim()) return
+    setInternalInviting(true)
+    setInternalError(null)
+    setInternalSuccess(null)
+    try {
+      const res = await fetch('/api/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: project.id,
+          email: internalEmail.trim(),
+          role: internalRole,
+          // vendor_task_ids は送らない（null のまま）
+        }),
+      })
+      const json = await res.json() as { error?: string; data?: unknown }
+      if (!res.ok) throw new Error(json.error ?? '招待に失敗しました')
+      setInternalEmail('')
+      setInternalSuccess('招待メールを送信しました')
+    } catch (err) {
+      console.error('Internal invite failed:', err)
+      setInternalError(err instanceof Error ? err.message : '招待に失敗しました')
+    } finally {
+      setInternalInviting(false)
+    }
+  }
+
+  function handleVendorTaskToggle(taskId: string) {
+    setVendorTaskIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(taskId)) {
+        next.delete(taskId)
+      } else {
+        next.add(taskId)
+      }
+      return next
+    })
+  }
+
+  async function handleVendorInvite() {
+    if (!vendorEmail.trim()) return
+    setVendorInviting(true)
+    setVendorError(null)
+    setVendorSuccess(null)
+    try {
+      // まずベンダーとして招待（RPC が vendor_task_ids を '{}' で初期化する）
+      const postRes = await fetch('/api/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: project.id,
+          email: vendorEmail.trim(),
+          role: 'vendor',
+        }),
+      })
+      const postJson = await postRes.json() as { error?: string; data?: unknown }
+      if (!postRes.ok) throw new Error(
+        (postJson.error) ?? '招待に失敗しました'
+      )
+
+      // 選択済みのタスクIDがあれば担当スコープを設定する
+      const selectedIds = Array.from(vendorTaskIds)
+      const memberId =
+        postJson.data !== null &&
+        typeof postJson.data === 'object' &&
+        'member_id' in postJson.data &&
+        typeof (postJson.data as Record<string, unknown>).member_id === 'string'
+          ? (postJson.data as Record<string, unknown>).member_id as string
+          : null
+      if (selectedIds.length > 0 && memberId) {
+        const patchRes = await fetch('/api/members', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: memberId,
+            vendor_task_ids: selectedIds,
+          }),
+        })
+        const patchJson = await patchRes.json() as { error?: string }
+        if (!patchRes.ok) throw new Error(patchJson.error ?? 'タスクスコープの設定に失敗しました')
+      }
+
+      setVendorEmail('')
+      setVendorTaskIds(new Set())
+      setVendorSuccess('ベンダーを招待しました')
+    } catch (err) {
+      console.error('Vendor invite failed:', err)
+      setVendorError(err instanceof Error ? err.message : '招待に失敗しました')
+    } finally {
+      setVendorInviting(false)
+    }
+  }
+
+  async function handleRoleChange(memberId: string, newRole: UserRole) {
+    setRoleChangingIds((prev) => new Set(prev).add(memberId))
+    setGlobalError(null)
+    // Optimistic update
+    setMembers((prev) =>
+      prev.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
+    )
+    try {
+      const res = await fetch('/api/members', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: memberId, role: newRole }),
+      })
+      const json = await res.json() as { error?: string; data?: MemberWithProfile }
+      if (!res.ok) throw new Error(json.error ?? 'ロール変更に失敗しました')
+      if (json.data) {
+        setMembers((prev) =>
+          prev.map((m) => (m.id === memberId ? { ...m, ...json.data } : m))
+        )
+      }
+    } catch (err) {
+      console.error('Role change failed:', err)
+      setGlobalError(err instanceof Error ? err.message : 'ロール変更に失敗しました')
+      // Revert
+      setMembers((prev) =>
+        prev.map((m) => {
+          const original = initialMembers.find((im) => im.id === m.id)
+          return m.id === memberId && original ? { ...m, role: original.role } : m
+        })
+      )
+    } finally {
+      setRoleChangingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(memberId)
+        return next
+      })
+    }
+  }
+
+  async function handleDelete(memberId: string) {
+    if (!window.confirm('このメンバーを削除してもよいですか？')) return
+    setDeletingIds((prev) => new Set(prev).add(memberId))
+    setGlobalError(null)
+    // Optimistic
+    const prevMembers = members
+    setMembers((prev) => prev.filter((m) => m.id !== memberId))
+    try {
+      const res = await fetch(`/api/members?memberId=${memberId}`, {
+        method: 'DELETE',
+      })
+      const json = await res.json() as { error?: string }
+      if (!res.ok) throw new Error(json.error ?? 'メンバー削除に失敗しました')
+    } catch (err) {
+      console.error('Delete failed:', err)
+      setGlobalError(err instanceof Error ? err.message : 'メンバー削除に失敗しました')
+      setMembers(prevMembers)
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(memberId)
+        return next
+      })
+    }
+  }
+
+  async function handleScopeChange(memberId: string, taskIds: string[]) {
+    const res = await fetch('/api/members', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: memberId, vendor_task_ids: taskIds }),
+    })
+    const json = await res.json() as { error?: string; data?: MemberWithProfile }
+    if (!res.ok) throw new Error(json.error ?? 'スコープ更新に失敗しました')
+    // API 成功後は常にローカルステートとストアを同期する
+    const updated = members.map((m) =>
+      m.id === memberId
+        ? { ...m, ...(json.data ?? {}), vendor_task_ids: taskIds }
+        : m
+    )
+    setMembers(updated)
+    setStoreMembers(updated)
+  }
+
+  async function handleInfoSave() {
+    if (!infoName.trim()) {
+      setInfoError('プロジェクト名は必須です')
+      return
+    }
+    setInfoLoading(true)
+    setInfoError(null)
+    setInfoSuccess(null)
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: infoName.trim(),
+          description: infoDescription || null,
+          color: infoColor,
+          client_name: infoClientName || null,
+          project_number: infoProjectNumber || null,
+          start_date: infoStartDate || null,
+          end_date: infoEndDate || null,
+        }),
+      })
+      const json = await res.json() as { error?: string; data?: Project }
+      if (!res.ok) throw new Error(json.error ?? '保存に失敗しました')
+      if (json.data) {
+        setInfoName(json.data.name)
+        setInfoDescription(json.data.description ?? '')
+        setInfoColor(json.data.color)
+        setInfoClientName(json.data.client_name ?? '')
+        setInfoProjectNumber(json.data.project_number ?? '')
+        setInfoStartDate(json.data.start_date ?? '')
+        setInfoEndDate(json.data.end_date ?? '')
+      }
+      setInfoSuccess('保存しました')
+      router.refresh()
+    } catch (err) {
+      setInfoError(err instanceof Error ? err.message : '保存に失敗しました')
+    } finally {
+      setInfoLoading(false)
+    }
+  }
+
+  async function handleVendorAssign(taskId: string, vendorId: string | null) {
+    const task = tasks.find((t) => t.id === taskId)
+    if (!task) return
+    // Optimistic update to store
+    updateTask(taskId, { vendor_id: vendorId })
+    const res = await fetch('/api/tasks', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId, vendor_id: vendorId, version: task.version }),
+    })
+    const json = await res.json() as { error?: string; data?: Task }
+    if (!res.ok) {
+      // Revert
+      updateTask(taskId, { vendor_id: task.vendor_id })
+      throw new Error(json.error ?? 'ベンダー割当に失敗しました')
+    }
+    if (json.data) {
+      updateTask(taskId, json.data)
+    }
+  }
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <h1 className="text-xl font-semibold mb-6">{project.name} — 設定</h1>
+
+      {globalError && (
+        <div className="mb-4 p-3 rounded-md bg-destructive/10 text-destructive text-sm">
+          {globalError}
+        </div>
+      )}
+
+      <Tabs defaultValue="members">
+        <TabsList>
+          <TabsTrigger value="info">基本情報</TabsTrigger>
+          <TabsTrigger value="members">メンバー管理</TabsTrigger>
+          {permissions.canManageMembers && (
+            <TabsTrigger value="vendors">ベンダー管理</TabsTrigger>
+          )}
+        </TabsList>
+
+        {/* 基本情報タブ */}
+        <TabsContent value="info">
+          <div className="space-y-4 mt-4 max-w-lg">
+            <div className="space-y-1.5">
+              <Label htmlFor="info-name">プロジェクト名 *</Label>
+              <Input
+                id="info-name"
+                value={infoName}
+                onChange={(e) => setInfoName(e.target.value)}
+                placeholder="プロジェクト名"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="info-description">説明</Label>
+              <Input
+                id="info-description"
+                value={infoDescription}
+                onChange={(e) => setInfoDescription(e.target.value)}
+                placeholder="説明（任意）"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="info-color">カラー</Label>
+              <input
+                id="info-color"
+                type="color"
+                value={infoColor}
+                onChange={(e) => setInfoColor(e.target.value)}
+                className="h-8 w-16 cursor-pointer rounded border border-input bg-transparent p-0.5"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="info-client-name">クライアント名</Label>
+              <Input
+                id="info-client-name"
+                value={infoClientName}
+                onChange={(e) => setInfoClientName(e.target.value)}
+                placeholder="クライアント名（任意）"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="info-project-number">プロジェクト番号</Label>
+              <Input
+                id="info-project-number"
+                value={infoProjectNumber}
+                onChange={(e) => setInfoProjectNumber(e.target.value)}
+                placeholder="プロジェクト番号（任意）"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="info-start-date">開始日</Label>
+                <Input
+                  id="info-start-date"
+                  type="date"
+                  value={infoStartDate}
+                  onChange={(e) => setInfoStartDate(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="info-end-date">終了日</Label>
+                <Input
+                  id="info-end-date"
+                  type="date"
+                  value={infoEndDate}
+                  min={infoStartDate || undefined}
+                  onChange={(e) => setInfoEndDate(e.target.value)}
+                />
+              </div>
+            </div>
+            {infoError && (
+              <p className="text-sm text-destructive">{infoError}</p>
+            )}
+            {infoSuccess && (
+              <p className="text-sm text-green-600">{infoSuccess}</p>
+            )}
+            <Button onClick={handleInfoSave} disabled={infoLoading}>
+              {infoLoading ? '保存中...' : '保存'}
+            </Button>
+          </div>
+        </TabsContent>
+
+        {/* メンバー管理タブ */}
+        <TabsContent value="members">
+          <div className="space-y-6 mt-4">
+            {/* メンバー一覧 */}
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">名前</th>
+                    <th className="text-left p-3 font-medium">メール</th>
+                    <th className="text-left p-3 font-medium">ロール</th>
+                    <th className="text-left p-3 font-medium">参加日</th>
+                    {permissions.canManageMembers && (
+                      <th className="text-left p-3 font-medium">操作</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((member) => (
+                    <tr key={member.id} className="border-t">
+                      <td className="p-3">
+                        {member.profiles?.display_name ?? '—'}
+                      </td>
+                      <td className="p-3 text-muted-foreground">
+                        {member.profiles?.email ?? '—'}
+                      </td>
+                      <td className="p-3">
+                        {permissions.canManageMembers && member.user_id !== currentUserId ? (
+                          <Select
+                            value={member.role}
+                            onValueChange={(v) => handleRoleChange(member.id, v as UserRole)}
+                            disabled={roleChangingIds.has(member.id)}
+                          >
+                            <SelectTrigger size="sm" className="w-36">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(Object.keys(ROLE_LABELS) as UserRole[]).map((role) => (
+                                <SelectItem key={role} value={role}>
+                                  {ROLE_LABELS[role]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant="outline">{ROLE_LABELS[member.role]}</Badge>
+                        )}
+                        {/* ベンダー行に担当タスク数を表示する */}
+                        {member.role === 'vendor' && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            担当タスク数: {member.vendor_task_ids?.length ?? 0}件
+                          </p>
+                        )}
+                      </td>
+                      <td className="p-3 text-muted-foreground">
+                        {new Date(member.joined_at).toLocaleDateString('ja-JP')}
+                      </td>
+                      {permissions.canManageMembers && (
+                        <td className="p-3">
+                          {member.user_id !== currentUserId && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => handleDelete(member.id)}
+                              disabled={deletingIds.has(member.id)}
+                            >
+                              削除
+                            </Button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 招待フォーム（オーナーのみ） */}
+            {permissions.canManageMembers && (
+              <div className="space-y-4">
+                {/* 社内メンバー招待 */}
+                <div className="border rounded-lg p-4 space-y-3">
+                  <h3 className="font-medium text-sm">社内メンバー招待</h3>
+                  <div className="flex gap-2 items-start">
+                    <div className="flex-1">
+                      <Input
+                        type="email"
+                        placeholder="メールアドレス"
+                        value={internalEmail}
+                        onChange={(e) => setInternalEmail(e.target.value)}
+                      />
+                    </div>
+                    <Select
+                      value={internalRole}
+                      onValueChange={(v) => setInternalRole(v as UserRole)}
+                    >
+                      <SelectTrigger className="w-36">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {INTERNAL_ROLES.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {ROLE_LABELS[role]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={handleInternalInvite}
+                      disabled={internalInviting || !internalEmail.trim()}
+                    >
+                      {internalInviting ? '送信中...' : '招待'}
+                    </Button>
+                  </div>
+                  {internalError && (
+                    <p className="text-sm text-destructive">{internalError}</p>
+                  )}
+                  {internalSuccess && (
+                    <p className="text-sm text-green-600">{internalSuccess}</p>
+                  )}
+                </div>
+
+                {/* ベンダー招待 */}
+                <div className="border rounded-lg p-4 space-y-3">
+                  <h3 className="font-medium text-sm">ベンダー招待</h3>
+                  {tasks.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      先にタスクを追加してください
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex gap-2 items-start">
+                        <div className="flex-1">
+                          <Input
+                            type="email"
+                            placeholder="メールアドレス"
+                            value={vendorEmail}
+                            onChange={(e) => setVendorEmail(e.target.value)}
+                          />
+                        </div>
+                        <Button
+                          onClick={handleVendorInvite}
+                          disabled={vendorInviting || !vendorEmail.trim()}
+                        >
+                          {vendorInviting ? '送信中...' : '招待'}
+                        </Button>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-muted-foreground font-medium">
+                          担当タスクを選択（後から変更可能）
+                        </p>
+                        <ScrollArea className="max-h-48 border rounded-md p-2">
+                          <div className="space-y-2 p-1">
+                            {tasks.map((task) => (
+                              <div key={task.id} className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  id={`vendor-invite-task-${task.id}`}
+                                  checked={vendorTaskIds.has(task.id)}
+                                  onChange={() => handleVendorTaskToggle(task.id)}
+                                  className="h-4 w-4 rounded border-gray-300"
+                                />
+                                <Label
+                                  htmlFor={`vendor-invite-task-${task.id}`}
+                                  className="font-normal cursor-pointer"
+                                >
+                                  {task.name}
+                                </Label>
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    </>
+                  )}
+                  {vendorError && (
+                    <p className="text-sm text-destructive">{vendorError}</p>
+                  )}
+                  {vendorSuccess && (
+                    <p className="text-sm text-green-600">{vendorSuccess}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ベンダーメンバーの担当タスク変更（オーナーのみ） */}
+            {permissions.canManageMembers && vendorMembers.length > 0 && (
+              <div className="border rounded-lg p-4 space-y-4">
+                <h3 className="font-medium text-sm">ベンダーの担当タスク変更</h3>
+                {vendorMembers.map((member) => (
+                  <div key={member.id} className="border-t pt-4 first:border-t-0 first:pt-0">
+                    <VendorMemberTaskScope
+                      member={member}
+                      tasks={tasks}
+                      onScopeChange={handleScopeChange}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </TabsContent>
+
+        {/* ベンダー管理タブ */}
+        {permissions.canManageMembers && (
+          <TabsContent value="vendors">
+            <div className="space-y-8 mt-4">
+              {/* タスクへのベンダー割当 */}
+              <div className="border rounded-lg p-4 space-y-3">
+                <h3 className="font-medium">タスクへのベンダー割当</h3>
+                <VendorTaskAssignment
+                  tasks={tasks}
+                  vendorMembers={vendorMembers}
+                  onAssign={handleVendorAssign}
+                />
+              </div>
+
+              {/* ベンダーメンバーの閲覧スコープ設定 */}
+              <div className="border rounded-lg p-4 space-y-6">
+                <h3 className="font-medium">ベンダーメンバーの閲覧スコープ</h3>
+                {vendorMembers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    ベンダーメンバーがいません
+                  </p>
+                ) : (
+                  vendorMembers.map((member) => (
+                    <div key={member.id} className="border-t pt-4 first:border-t-0 first:pt-0">
+                      <VendorMemberTaskScope
+                        member={member}
+                        tasks={tasks}
+                        onScopeChange={handleScopeChange}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </TabsContent>
+        )}
+      </Tabs>
+    </div>
+  )
+}
