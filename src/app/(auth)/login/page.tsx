@@ -15,6 +15,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
+  // パスワードリセット関連の state
+  const [showReset, setShowReset] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetMessage, setResetMessage] = useState<string | null>(null)
+  const [resetError, setResetError] = useState<string | null>(null)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -33,6 +40,25 @@ export default function LoginPage() {
     }
 
     router.push('/')
+  }
+
+  async function handleResetPassword(e: React.FormEvent) {
+    e.preventDefault()
+    setResetError(null)
+    setResetMessage(null)
+    setResetLoading(true)
+
+    const supabase = createClient()
+    const { error: resetErr } = await supabase.auth.resetPasswordForEmail(resetEmail, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    })
+
+    if (resetErr) {
+      setResetError(resetErr.message)
+    } else {
+      setResetMessage('パスワードリセット用のメールを送信しました。メールをご確認ください。')
+    }
+    setResetLoading(false)
   }
 
   return (
@@ -64,7 +90,57 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
           />
+          <div className="text-right">
+            <button
+              type="button"
+              onClick={() => {
+                setShowReset(!showReset)
+                setResetError(null)
+                setResetMessage(null)
+              }}
+              className="text-xs text-indigo-600 hover:underline"
+            >
+              パスワードをお忘れですか？
+            </button>
+          </div>
         </div>
+
+        {/* パスワードリセット インライン入力 */}
+        {showReset && (
+          <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">
+            <p className="text-sm text-slate-600">
+              登録済みのメールアドレスを入力してください。パスワードリセット用のリンクをお送りします。
+            </p>
+            <form onSubmit={handleResetPassword} className="space-y-2">
+              <Input
+                type="email"
+                autoComplete="email"
+                required
+                value={resetEmail}
+                onChange={(e) => setResetEmail(e.target.value)}
+                placeholder="you@example.com"
+              />
+              {resetError && (
+                <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  {resetError}
+                </p>
+              )}
+              {resetMessage && (
+                <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                  {resetMessage}
+                </p>
+              )}
+              <Button
+                type="submit"
+                variant="outline"
+                className="w-full"
+                disabled={resetLoading}
+              >
+                {resetLoading ? '送信中...' : 'リセットメールを送信'}
+              </Button>
+            </form>
+          </div>
+        )}
 
         {error && (
           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
