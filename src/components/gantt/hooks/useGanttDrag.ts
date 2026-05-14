@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { addDays } from '@/lib/utils/dateUtils'
+import { addDays, toDateString } from '@/lib/utils/dateUtils'
 import { useTaskStore } from '@/store/taskStore'
 import type { Task, UserPermissions } from '@/types'
 
@@ -13,13 +13,6 @@ type DragState = {
   currentEndDate: string
 }
 
-function toDateStr(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 export function useGanttDrag(
   timelineStart: Date,
   dayWidth: number,
@@ -29,6 +22,7 @@ export function useGanttDrag(
   const dragRef = useRef<DragState | null>(null)
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null)
   const [ghostDates, setGhostDates] = useState<{ start: string; end: string } | null>(null)
+  const prevGhostDatesRef = useRef<{ start: string; end: string } | null>(null)
 
   const canEdit = permissions?.canEdit ?? false
 
@@ -66,19 +60,24 @@ export function useGanttDrag(
       let newEnd = dragRef.current.currentEndDate
 
       if (dragRef.current.mode === 'move') {
-        newStart = toDateStr(addDays(origStart, daysDelta))
-        newEnd = toDateStr(addDays(origEnd, daysDelta))
+        newStart = toDateString(addDays(origStart, daysDelta))
+        newEnd = toDateString(addDays(origEnd, daysDelta))
       } else if (dragRef.current.mode === 'resize-right') {
         const candidate = addDays(origEnd, daysDelta)
-        if (candidate >= origStart) newEnd = toDateStr(candidate)
+        if (candidate > origStart) newEnd = toDateString(candidate)
       } else if (dragRef.current.mode === 'resize-left') {
         const candidate = addDays(origStart, daysDelta)
-        if (candidate <= origEnd) newStart = toDateStr(candidate)
+        if (candidate < origEnd) newStart = toDateString(candidate)
       }
 
       dragRef.current.currentStartDate = newStart
       dragRef.current.currentEndDate = newEnd
-      setGhostDates({ start: newStart, end: newEnd })
+      const prev = prevGhostDatesRef.current
+      if (!prev || prev.start !== newStart || prev.end !== newEnd) {
+        const next = { start: newStart, end: newEnd }
+        prevGhostDatesRef.current = next
+        setGhostDates(next)
+      }
     },
     [dayWidth]
   )
@@ -89,6 +88,7 @@ export function useGanttDrag(
       dragRef.current
 
     dragRef.current = null
+    prevGhostDatesRef.current = null
     setDraggingTaskId(null)
     setGhostDates(null)
 

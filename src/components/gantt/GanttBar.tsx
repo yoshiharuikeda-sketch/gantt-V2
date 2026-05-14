@@ -1,6 +1,6 @@
 'use client'
 
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { getBarX, getBarWidth } from '@/lib/ganttUtils'
 import { format, parseISO } from '@/lib/utils/dateUtils'
 import { useProjectStore } from '@/store/projectStore'
@@ -79,9 +79,8 @@ export function GanttBar({
       )}
 
       {/* Main bar */}
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger
+      <Tooltip>
+        <TooltipTrigger
             render={
               <div
                 className={`absolute rounded group ${
@@ -132,21 +131,20 @@ export function GanttBar({
                 onMouseDown={(e) => { e.stopPropagation(); onDragStart(e, task, 'resize-right') }}
               />
             )}
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <div className="text-xs space-y-0.5">
-              <p className="font-semibold">{task.name}</p>
-              <p>{fmtDate(displayStart)} → {fmtDate(displayEnd)}</p>
-              <p>進捗: {task.progress}%</p>
-              {hasBaseline && (
-                <p className="text-muted-foreground">
-                  基準: {fmtDate(task.baseline!.start_date)} → {fmtDate(task.baseline!.end_date)}
-                </p>
-              )}
-            </div>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <div className="text-xs space-y-0.5">
+            <p className="font-semibold">{task.name}</p>
+            <p>{fmtDate(displayStart)} → {fmtDate(displayEnd)}</p>
+            <p>進捗: {task.progress}%</p>
+            {hasBaseline && (
+              <p className="text-muted-foreground">
+                基準: {fmtDate(task.baseline!.start_date)} → {fmtDate(task.baseline!.end_date)}
+              </p>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
     </>
   )
 }

@@ -4,7 +4,9 @@
 
 次世代ガントチャート・工程管理アプリ。ベンダーRBAC（役割ベースアクセス制御）と版管理（Snapshot/Baseline）を独自機能として持つ。
 
-**スタック:** Next.js 16.2.4 (App Router) / TypeScript / Tailwind CSS 4 / shadcn/ui / Supabase / Zustand / TanStack Table v8 / @dnd-kit/core / Lucide React
+**スタック:** Next.js 16.2.4 (App Router) / TypeScript / Tailwind CSS 4 / shadcn/ui / Supabase / Zustand / Lucide React
+
+> `@dnd-kit` によるタスク並び替えドラッグは削除済み（2026-05-11）
 
 ---
 
@@ -31,17 +33,42 @@
 ### ガントチャート
 - 左パネル（階層インデント・インライン編集・ベンダーBadge・列リサイズ）
 - タイムライン（day/week/month ズーム切替）
-- タスクバー（ドラッグ移動・リサイズ、楽観的更新＋ロールバック）
+- タスクバー（リサイズ、楽観的更新＋ロールバック）
 - Baseline オーバーレイ表示（版との差分を半透明バーで表示）
 - 版選択＋作成ダイアログ統合（`BaselineToggle.tsx`）
 - フェーズ追加ダイアログ（`AddPhaseDialog.tsx`）
 - タスク詳細モーダル（行クリックで開く、権限制御あり）
 - 左パネル幅をドラッグで変更可能（200〜600px）
 - 縦スクロール同期（左パネルとタイムライン）
-- @dnd-kit によるタスク並び替え（editor以上のみ有効）
+- **行番号列の表示**（GanttLeftPanel / TaskSheet）— 36px 幅、ヘッダー `#`、表示専用（2026-05-11）
+- **Page Up/Down のタイムライン同期**（GanttLeftPanel）— パネル高さ分スクロール、タイムライン側も同期（2026-05-11）
+
+### Excelライクなセル操作（GanttLeftPanel / TaskSheet 共通）
+- シングルクリックでセル選択（indigo リングでハイライト）
+- ダブルクリックで編集モード開始
+- 選択中に文字キー入力 → セル内容クリアして編集開始（押した文字が先頭に入る）
+- F2 → 内容保持で編集開始
+- Escape → 編集キャンセル、選択状態に戻る
+- Enter → 確定して1行下に移動
+- Tab / Shift+Tab → 確定して右/左に移動
+- 矢印キー（選択中） → 上下左右にセル移動
+- 他セルクリックで編集を保存して終了
+- クリック＆ドラッグで複数セル範囲選択
+- **Cmd+C** → 選択範囲をTSVコピー
+- **Cmd+X** → 切り取り（name列除く）
+- **Cmd+V** → 貼り付け（空白行へは新規タスク作成）
+- **Delete** → 選択セルの内容クリア（name列除く）
+- **Cmd+Delete** → タスク削除（確認ダイアログあり）
+- 右クリック → コンテキストメニュー（タスク削除）
+- **Cmd+Z** → Undo（サーバーにも反映）
+- **Cmd+Shift+Z** → Redo（サーバーにも反映）
+- 空白行をデフォルト表示（合計20行）、「+ 10行追加」ボタン
+- 空白行へのダブルクリック入力で新規タスク作成
+- **Shift+クリック／Shift+矢印キーで範囲選択拡張**（GanttLeftPanel / TaskSheet）— selectionAnchor / selectionHead state による矩形範囲拡張（2026-05-11）
+- **選択範囲の Delete キーで一括クリア**（TaskSheet 新規実装、GanttLeftPanel は元から対応済み）— selectionRange 内の全セルをクリア（name列除く）、Undo 対応（2026-05-11）
 
 ### タスクシートビュー
-- TanStack Table を使ったスプレッドシート形式（`TaskSheet.tsx`）
+- スプレッドシート形式（`TaskSheet.tsx`）
 - ガント/シート切替ボタン（ProjectView に組み込み済み）
 - RBAC 対応（ベンダーは担当タスクのみ編集可）
 
@@ -99,6 +126,17 @@
 - `GanttBar.tsx`: `TooltipProvider` を各バーに配置しており、大量タスク時に多数の Provider インスタンスが生成される
 - `ProjectSettings.tsx`: ロール変更エラー時のリバートが初期値に依存（長期セッションで古い状態にリバートする可能性）
 - `GET /api/tasks`: `is_project_member` が vendor ロールを弾く可能性がある（RLS が補完しているため機能上の問題はないが、APIレイヤーで明示的に許可することを推奨）
+
+---
+
+## Git ブランチ構成
+
+| ブランチ | 内容 |
+|---------|------|
+| `main` | 現在の開発ベースライン |
+| `feature/ag-grid` | AG Grid Community への移行試験（中断・保留） |
+
+> AG Grid Community は複数セル範囲選択・クリップボードが Enterprise 限定のため、カスタム実装に戻した（2026-05-11）
 
 ---
 
@@ -169,7 +207,8 @@ src/
 │   ├── useSignOut.ts
 │   ├── usePermissions.ts
 │   ├── useVendorFilter.ts
-│   └── useRealtimeProject.ts
+│   ├── useRealtimeProject.ts
+│   └── useUndoRedo.ts              # Undo/Redo コマンドパターン（新規）
 ├── lib/
 │   ├── ganttUtils.ts
 │   ├── utils.ts

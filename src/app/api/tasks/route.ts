@@ -21,10 +21,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   }
 
-  // メンバーシップ確認
+  // Explicitly allow all roles including vendor — do not filter by role here
+  // so that future RPC changes cannot silently break vendor read access
   const { data: isMember } = await supabase.rpc('is_project_member', {
     p_project_id: projectId,
     p_user_id: user.id,
+    p_roles: ['owner', 'editor', 'viewer', 'limited_viewer', 'vendor'],
   })
   if (!isMember) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

@@ -1,22 +1,54 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { format, parseISO } from '@/lib/utils/dateUtils'
 import { useTaskStore } from '@/store/taskStore'
 import { useProjectStore } from '@/store/projectStore'
 import { canVendorEditTask } from '@/types/rbac'
 import { TaskDetailModal } from '@/components/task/TaskDetailModal'
+import type { UndoCommand } from '@/hooks/useUndoRedo'
+import { buildWbsNumberMap } from '@/lib/utils/taskTree'
 import type { TaskWithBaseline, GanttColKey, UserPermissions } from '@/types'
 import type { Task, Phase } from '@/types'
 
-const COL_DEFS: Record<GanttColKey, { label: string; width: number }> = {
-  name:       { label: 'タスク名',   width: 180 },
-  start_date: { label: '開始日',     width: 90  },
-  end_date:   { label: '終了日',     width: 90  },
-  progress:   { label: '進捗率',     width: 70  },
-  vendor:     { label: 'ベンダー',   width: 100 },
-  updated_at: { label: '更新日',     width: 100 },
+const DEFAULT_COL_WIDTHS: Record<GanttColKey, number> = {
+  name:       180,
+  start_date: 90,
+  end_date:   90,
+  progress:   70,
+  vendor:     100,
+  updated_at: 100,
+}
+
+const COL_LABELS: Record<GanttColKey, string> = {
+  name:       'タスク名',
+  start_date: '開始日',
+  end_date:   '終了日',
+  progress:   '進捗率',
+  vendor:     'ベンダー',
+  updated_at: '更新日',
+}
+
+const LOCAL_STORAGE_COL_WIDTHS_KEY = 'gantt-column-widths'
+
+function loadColWidths(): Record<GanttColKey, number> {
+  if (typeof window === 'undefined') return { ...DEFAULT_COL_WIDTHS }
+  try {
+    const stored = localStorage.getItem(LOCAL_STORAGE_COL_WIDTHS_KEY)
+    if (!stored) return { ...DEFAULT_COL_WIDTHS }
+    const parsed = JSON.parse(stored) as Partial<Record<GanttColKey, number>>
+    return {
+      name:       typeof parsed.name       === 'number' ? parsed.name       : DEFAULT_COL_WIDTHS.name,
+      start_date: typeof parsed.start_date === 'number' ? parsed.start_date : DEFAULT_COL_WIDTHS.start_date,
+      end_date:   typeof parsed.end_date   === 'number' ? parsed.end_date   : DEFAULT_COL_WIDTHS.end_date,
+      progress:   typeof parsed.progress   === 'number' ? parsed.progress   : DEFAULT_COL_WIDTHS.progress,
+      vendor:     typeof parsed.vendor     === 'number' ? parsed.vendor     : DEFAULT_COL_WIDTHS.vendor,
+      updated_at: typeof parsed.updated_at === 'number' ? parsed.updated_at : DEFAULT_COL_WIDTHS.updated_at,
+    }
+  } catch {
+    return { ...DEFAULT_COL_WIDTHS }
+  }
 }
 
 // Columns that cannot be directly edited in the inline cell
@@ -24,7 +56,7 @@ const NON_EDITABLE_COLS = new Set<GanttColKey>(['vendor', 'updated_at'])
 
 function fmtDate(val: string | null | undefined): string {
   if (!val) return '-'
-  try { return format(parseISO(val), 'yyyy/MM/dd') } catch { return '-' }
+  try { return format(parseISO(val), 'yy/MM/dd') } catch { return '-' }
 }
 
 // Returns the raw editable value for a task cell
@@ -65,6 +97,11 @@ interface GanttLeftPanelProps {
   columns: GanttColKey[]
   onTaskClick?: (taskId: string) => void
   permissions: UserPermissions | null
+  pushCommand: (cmd: UndoCommand) => void
+  /** Called with true when a cell enters edit mode, false when it exits */
+  onEditingChange: (isEditing: boolean) => void
+  /** Called whenever the primary selected row changes (null = deselected) */
+  onSelectedRowChange?: (taskId: string | null) => void
 }
 
 // ─── PhaseRow ─────────────────────────────────────────────────────────────────
@@ -73,31 +110,141 @@ interface PhaseRowProps {
   phase: Phase
   rowHeight: number
   columns: GanttColKey[]
+  colWidths: Record<GanttColKey, number>
+  wbsNumber: string
+  aggStart: string | null
+  aggEnd: string | null
+  aggProgress: number
+  isSelected: boolean
+  isEditing: boolean
+  editValue: string
+  onEditValueChange: (v: string) => void
+  onCommitEdit: () => void
+  onCancelEdit: () => void
+  onNameDoubleClick: () => void
+  onRowSelect: (e: React.MouseEvent) => void
+  onContextMenu: (e: React.MouseEvent) => void
+  onWbsClick?: (e: React.MouseEvent) => void
+  onWbsMouseDown?: (e: React.MouseEvent) => void
+  onWbsMouseEnter?: () => void
+  // セル選択
+  selectedCol: GanttColKey | null
+  onCellClick: (col: GanttColKey, e: React.MouseEvent) => void
+  onCellMouseDown: (col: GanttColKey, e: React.MouseEvent) => void
 }
 
-function PhaseRow({ phase, rowHeight, columns }: PhaseRowProps) {
-  const totalColWidth = columns.reduce((sum, key) => sum + COL_DEFS[key].width, 0)
+function PhaseRow({
+  phase,
+  rowHeight,
+  columns,
+  colWidths,
+  wbsNumber,
+  aggStart,
+  aggEnd,
+  aggProgress,
+  isSelected,
+  isEditing,
+  editValue,
+  onEditValueChange,
+  onCommitEdit,
+  onCancelEdit,
+  onNameDoubleClick,
+  onRowSelect,
+  onContextMenu,
+  onWbsClick,
+  onWbsMouseDown,
+  onWbsMouseEnter,
+  selectedCol,
+  onCellClick,
+  onCellMouseDown,
+}: PhaseRowProps) {
+  const baseRowBg = isSelected ? 'bg-indigo-100' : 'bg-slate-100'
 
   return (
     <div
-      className="flex items-center border-b border-slate-200 bg-slate-100 select-none"
+      className={`flex items-center border-b border-slate-200 select-none ${baseRowBg}`}
       style={{ height: rowHeight }}
+      onClick={onRowSelect}
+      onContextMenu={onContextMenu}
     >
-      {/* Phase color bar */}
+      {/* Phase color bar — 4px left border */}
       <div
         className="flex-shrink-0"
-        style={{
-          width: 4,
-          height: '100%',
-          backgroundColor: phase.color,
-        }}
+        style={{ width: 4, height: '100%', backgroundColor: phase.color }}
       />
+      {/* WBS number cell */}
       <div
-        className="flex items-center overflow-hidden"
-        style={{ width: totalColWidth, height: '100%', paddingLeft: 8, paddingRight: 8 }}
+        className={`flex-shrink-0 flex items-center justify-center border-r border-slate-200 px-1 ${onWbsClick ? 'cursor-pointer hover:bg-indigo-100' : ''}`}
+        style={{ width: 32, height: '100%' }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onWbsClick?.(e)
+        }}
+        onMouseDown={(e) => {
+          e.stopPropagation()
+          onWbsMouseDown?.(e)
+        }}
+        onMouseEnter={onWbsMouseEnter}
       >
-        <span className="text-xs font-bold text-slate-700 truncate">{phase.name}</span>
+        <span className="text-xs font-bold text-slate-400 select-none truncate">{wbsNumber}</span>
       </div>
+      {/* Column cells */}
+      {columns.map((col) => {
+        let content: React.ReactNode = null
+        if (col === 'name') {
+          content = isEditing ? (
+            <input
+              autoFocus
+              type="text"
+              value={editValue}
+              onChange={(e) => onEditValueChange(e.target.value)}
+              onBlur={onCommitEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); onCancelEdit(); return }
+                if (e.key === 'Enter') { e.preventDefault(); onCommitEdit(); return }
+              }}
+              className="w-full text-xs font-bold bg-transparent border-none outline-none text-slate-700"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span className="text-xs font-bold text-slate-700 truncate w-full">{phase.name}</span>
+          )
+        } else if (col === 'start_date') {
+          content = <span className="text-xs text-slate-500 truncate">{fmtDate(aggStart)}</span>
+        } else if (col === 'end_date') {
+          content = <span className="text-xs text-slate-500 truncate">{fmtDate(aggEnd)}</span>
+        } else if (col === 'progress') {
+          content = <span className="text-xs text-slate-500 truncate">{aggProgress}%</span>
+        } else {
+          content = null
+        }
+
+        // vendor / updated_at: no cell selection (empty cells, row-select only)
+        const isCellSelectable = col === 'name' || col === 'start_date' || col === 'end_date' || col === 'progress'
+        const isCellSelected = selectedCol === col
+
+        return (
+          <div
+            key={col}
+            className={[
+              'flex-shrink-0 flex items-center border-r border-slate-200 overflow-hidden',
+              isCellSelectable && isCellSelected ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50' : '',
+              col === 'name' && !isEditing ? 'cursor-pointer' : isCellSelectable ? 'cursor-default' : '',
+            ].filter(Boolean).join(' ')}
+            style={{ width: colWidths[col], height: '100%', paddingLeft: 8, paddingRight: 8 }}
+            onDoubleClick={col === 'name' ? (e) => { e.stopPropagation(); onNameDoubleClick() } : undefined}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (isCellSelectable) onCellClick(col, e)
+            }}
+            onMouseDown={(e) => {
+              if (isCellSelectable) onCellMouseDown(col, e)
+            }}
+          >
+            {content}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -108,12 +255,15 @@ interface TaskRowProps {
   task: TaskWithBaseline
   rowHeight: number
   columns: GanttColKey[]
+  colWidths: Record<GanttColKey, number>
   rowIndex: number
+  wbsNumber: string
   activeCell: ActiveCell | null
   selectedCell: CellId | null
   selectionRange: Set<string> | null
   editValue: string
   isSelected: boolean
+  wrapText: boolean
   onEditValueChange: (v: string) => void
   onCellClick: (task: TaskWithBaseline, col: GanttColKey) => void
   onCellDoubleClick: (task: TaskWithBaseline, col: GanttColKey) => void
@@ -125,18 +275,24 @@ interface TaskRowProps {
   onContextMenu: (e: React.MouseEvent, taskId: string) => void
   onCellMouseDown: (task: TaskWithBaseline, col: GanttColKey, e: React.MouseEvent) => void
   onCellMouseEnter: (task: TaskWithBaseline, col: GanttColKey) => void
+  onWbsClick: (taskId: string, e: React.MouseEvent) => void
+  onWbsMouseDown: (taskId: string, e: React.MouseEvent) => void
+  onWbsMouseEnter: (taskId: string) => void
 }
 
 function TaskRow({
   task,
   rowHeight,
   columns,
+  colWidths,
   rowIndex,
+  wbsNumber,
   activeCell,
   selectedCell,
   selectionRange,
   editValue,
   isSelected,
+  wrapText,
   onEditValueChange,
   onCellClick,
   onCellDoubleClick,
@@ -148,6 +304,9 @@ function TaskRow({
   onContextMenu,
   onCellMouseDown,
   onCellMouseEnter,
+  onWbsClick,
+  onWbsMouseDown,
+  onWbsMouseEnter,
 }: TaskRowProps) {
   const baseRowBg = isSelected
     ? 'bg-indigo-100'
@@ -162,6 +321,22 @@ function TaskRow({
       onClick={(e) => onRowSelect(task.id, e)}
       onContextMenu={(e) => onContextMenu(e, task.id)}
     >
+
+      <div
+        className="flex-shrink-0 flex items-center justify-center border-r border-slate-200 px-1 cursor-pointer hover:bg-indigo-100"
+        style={{ width: 36, height: '100%' }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onWbsClick(task.id, e)
+        }}
+        onMouseDown={(e) => {
+          e.stopPropagation()
+          onWbsMouseDown(task.id, e)
+        }}
+        onMouseEnter={() => onWbsMouseEnter(task.id)}
+      >
+        <span className="text-xs text-slate-400 select-none truncate">{wbsNumber}</span>
+      </div>
       {columns.map((col, colIdx) => {
         const isEditing = activeCell?.taskId === task.id && activeCell?.col === col
         const cellKey = `${task.id}:${col}`
@@ -186,7 +361,7 @@ function TaskRow({
                       : '',
             ].join(' ')}
             style={{
-              width: COL_DEFS[col].width,
+              width: colWidths[col],
               height: '100%',
               paddingLeft: colIdx === 0 ? 8 + indentPx : 8,
               paddingRight: 8,
@@ -240,7 +415,7 @@ function TaskRow({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className="text-xs text-slate-700 truncate w-full">
+              <span className={`text-xs text-slate-700 w-full ${wrapText ? 'whitespace-normal break-words' : 'truncate'}`}>
                 {getDisplayValue(task, col)}
               </span>
             )}
@@ -256,6 +431,7 @@ function TaskRow({
 interface EmptyRowProps {
   rowHeight: number
   columns: GanttColKey[]
+  colWidths: Record<GanttColKey, number>
   rowIndex: number
   isEditing: boolean
   editValue: string
@@ -265,11 +441,13 @@ interface EmptyRowProps {
   onCancel: () => void
   onDoubleClick: () => void
   onCellClick: (col: GanttColKey) => void
+  onContextMenu: (e: React.MouseEvent) => void
 }
 
 function EmptyRow({
   rowHeight,
   columns,
+  colWidths,
   rowIndex,
   isEditing,
   editValue,
@@ -279,6 +457,7 @@ function EmptyRow({
   onCancel,
   onDoubleClick,
   onCellClick,
+  onContextMenu,
 }: EmptyRowProps) {
   const baseRowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'
 
@@ -287,7 +466,15 @@ function EmptyRow({
       className={`flex items-center ${baseRowBg} hover:bg-blue-50 transition-colors`}
       style={{ height: rowHeight }}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
     >
+
+      <div
+        className="flex-shrink-0 flex items-center justify-center border-r border-dashed border-slate-300"
+        style={{ width: 36, height: '100%' }}
+      >
+        {/* Empty rows have no WBS number; show nothing in the row number cell */}
+      </div>
       {columns.map((col, colIdx) => {
         const isSelected = !isEditing && selectedCol === col
         const isEditingThisCell = col === 'name' && isEditing
@@ -303,9 +490,9 @@ function EmptyRow({
                   : 'hover:bg-indigo-50',
             ].join(' ')}
             style={{
-              width: COL_DEFS[col].width,
+              width: colWidths[col],
               height: '100%',
-              paddingLeft: colIdx === 0 ? 8 : 8,
+              paddingLeft: 8,
               paddingRight: 8,
               borderBottom: '1px dashed #cbd5e1',
             }}
@@ -406,12 +593,41 @@ function ContextMenu({
   )
 }
 
+// ─── PhaseContextMenu ─────────────────────────────────────────────────────────
+
+function PhaseContextMenu({ x, y, canEdit, isUnassigned, onRename, onDelete, onConvertToTask }: {
+  x: number; y: number; canEdit: boolean; isUnassigned: boolean
+  onRename: () => void; onDelete: () => void; onConvertToTask: () => void
+}) {
+  const items = [
+    { label: 'フェーズ名を変更', onClick: onRename, disabled: !canEdit || isUnassigned },
+    { label: 'タスクに戻す', onClick: onConvertToTask, disabled: !canEdit || isUnassigned },
+    { label: 'フェーズを削除', onClick: onDelete, disabled: !canEdit },
+  ]
+  return (
+    <div
+      className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
+      style={{ left: x, top: y }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {items.map((item, i) => (
+        <button key={i} disabled={item.disabled} onClick={item.onClick}
+          className={['w-full flex items-center px-3 py-1.5 text-xs text-left',
+            item.disabled ? 'text-slate-300 cursor-not-allowed' : 'text-slate-700 hover:bg-indigo-50 cursor-pointer'].join(' ')}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ─── GanttLeftPanel ───────────────────────────────────────────────────────────
 
-// Flat list entry used for rendering: either a phase header or a task row
+// Flat list entry used for rendering: a phase header or a task row
 type RowEntry =
-  | { kind: 'phase'; phase: Phase }
-  | { kind: 'task'; task: TaskWithBaseline; visualIndex: number }
+  | { kind: 'phase'; phase: Phase; wbsNumber: string; aggStart: string | null; aggEnd: string | null; aggProgress: number }
+  | { kind: 'task'; task: TaskWithBaseline; visualIndex: number; wbsNumber: string }
 
 // Default cell value to use when clearing a cell during cut
 function getDefaultRawValue(col: GanttColKey): string {
@@ -424,7 +640,7 @@ function getDefaultRawValue(col: GanttColKey): string {
   }
 }
 
-export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: GanttLeftPanelProps) {
+export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange }: GanttLeftPanelProps) {
   const currentUserId = useProjectStore((s) => s.currentUserId)
   const currentProject = useProjectStore((s) => s.currentProject)
   const upsertTask = useTaskStore((s) => s.upsertTask)
@@ -432,9 +648,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   const storeTasks = useTaskStore((s) => s.tasks)
   const phases = useTaskStore((s) => s.phases)
   const reorderTasks = useTaskStore((s) => s.reorderTasks)
+  const upsertPhase = useTaskStore((s) => s.upsertPhase)
+  const removePhase = useTaskStore((s) => s.removePhase)
+
+  // Column widths — loaded from localStorage so they survive page reloads
+  const [colWidths, setColWidths] = useState<Record<GanttColKey, number>>(loadColWidths)
 
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null)
-  // selectedCell: セル選択状態（ハイライトのみ、編集なし）
   const [selectedCell, setSelectedCell] = useState<CellId | null>(null)
   const [editValue, setEditValue] = useState('')
 
@@ -442,6 +662,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   const [selectionAnchor, setSelectionAnchor] = useState<CellId | null>(null)
   const [selectionHead, setSelectionHead] = useState<CellId | null>(null)
   const isDraggingCellsRef = useRef(false)
+  // WBS number column drag-selection (separate from cell drag)
+  const isWbsDraggingRef = useRef(false)
+  // Set when WBS onMouseDown fires to suppress the subsequent onClick (which would reset the drag selection)
+  const suppressNextWbsClickRef = useRef(false)
   // Used for the TaskDetailModal (click on updated_at column)
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null)
   // Primary selected row (used for keyboard shortcuts when single selection)
@@ -453,15 +677,32 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   const [clipboard, setClipboard] = useState<ClipboardData | null>(null)
   // Whether the clipboard came from a cut (so we delete source after paste)
   const cutTaskIdRef = useRef<string | null>(null)
+  // Track whether the OS clipboard has cell-level TSV content written by this component.
+  // Used to enable the "貼り付け" item in the empty-row context menu.
+  const hasCellClipboardRef = useRef(false)
 
-  // Context menu
+  // Context menu for task rows
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; taskId: string } | null>(null)
+  // Context menu for empty rows (shows "タスクを追加" only)
+  const [emptyRowContextMenu, setEmptyRowContextMenu] = useState<{ x: number; y: number; rowIndex: number } | null>(null)
+
+  // Phase 行選択
+  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(null)
+  // フェーズセル選択
+  const [selectedPhaseCell, setSelectedPhaseCell] = useState<{ phaseId: string; col: GanttColKey } | null>(null)
+  // Phase インライン編集
+  const [activePhaseName, setActivePhaseName] = useState<{ phaseId: string } | null>(null)
+  const [phaseEditValue, setPhaseEditValue] = useState('')
+  // Phase コンテキストメニュー
+  const [phaseContextMenu, setPhaseContextMenu] = useState<{ x: number; y: number; phaseId: string } | null>(null)
 
   // Index of the empty row currently in edit mode (null = none)
   const [editingEmptyRowIndex, setEditingEmptyRowIndex] = useState<number | null>(null)
   const [emptyRowValue, setEmptyRowValue] = useState('')
   // Extra empty rows added by the "+ 10行追加" button
   const [extraEmptyRows, setExtraEmptyRows] = useState(0)
+  // Text always wraps (no toggle)
+  const wrapText = true
   // Selected empty row cell (single-click selection; paste origin)
   const [selectedEmptyRow, setSelectedEmptyRow] = useState<{ rowIndex: number; col: GanttColKey } | null>(null)
   // Ref so handleGridKeyDown can read the latest empty-row count without stale closures
@@ -477,26 +718,65 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   const committingRef = useRef(false)
   // Refs so that mousedown handlers can read fresh edit state without stale closures
   const activeCellRef = useRef<ActiveCell | null>(null)
+
+  // Notify parent whenever edit mode starts or stops so it can update its isEditing check
+  useEffect(() => {
+    onEditingChange(activeCell !== null)
+  }, [activeCell, onEditingChange])
+
+  // Notify parent whenever the primary selected row changes
+  useEffect(() => {
+    onSelectedRowChange?.(selectedRowId)
+  }, [selectedRowId, onSelectedRowChange])
+
+  // pushCommand is provided by the parent (GanttChart) which owns the shared undo/redo stack
   const editValueRef = useRef('')
   const tasksRef = useRef<TaskWithBaseline[]>(tasks)
+
+  // Refs for delete-related state so deleteRow always sees the latest values
+  // without causing stale closures in the document keydown handler
+  const selectedRowIdsRef = useRef<Set<string>>(new Set())
+  const selectedRowIdRef = useRef<string | null>(null)
+  const selectionRangeRef = useRef<Set<string> | null>(null)
 
   // ─── Phase grouping ──────────────────────────────────────────────────────────
 
   // Build a flat list of rows: phase headers interleaved with task rows.
   // Tasks with no phase go into an "未分類" group at the end.
-  const rows: RowEntry[] = (() => {
+  // Each entry carries a WBS number reflecting the phase/task hierarchy.
+  const rows: RowEntry[] = useMemo(() => {
     const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
     const result: RowEntry[] = []
     let visualIndex = 0
+    let phaseCounter = 0
+
+    // Pre-compute WBS numbers for all real tasks using the shared utility.
+    const wbsNumberMap = buildWbsNumberMap(tasks, phases)
+
+    const buildPhaseEntries = (phaseTasks: TaskWithBaseline[]) => {
+      for (const task of phaseTasks) {
+        result.push({ kind: 'task', task, visualIndex, wbsNumber: wbsNumberMap.get(task.id) ?? '' })
+        visualIndex++
+      }
+    }
+
+    const computeAgg = (phaseTasks: TaskWithBaseline[]) => {
+      if (phaseTasks.length === 0) return { aggStart: null, aggEnd: null, aggProgress: 0 }
+      const starts = phaseTasks.map((t) => t.start_date).filter((d): d is string => !!d)
+      const ends = phaseTasks.map((t) => t.end_date).filter((d): d is string => !!d)
+      const aggStart = starts.length > 0 ? starts.reduce((a, b) => (a < b ? a : b)) : null
+      const aggEnd = ends.length > 0 ? ends.reduce((a, b) => (a > b ? a : b)) : null
+      const aggProgress = Math.round(phaseTasks.reduce((sum, t) => sum + t.progress, 0) / phaseTasks.length)
+      return { aggStart, aggEnd, aggProgress }
+    }
 
     for (const phase of sortedPhases) {
       const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
-      if (phaseTasks.length === 0) continue
-      result.push({ kind: 'phase', phase })
-      for (const task of phaseTasks) {
-        result.push({ kind: 'task', task, visualIndex })
-        visualIndex++
-      }
+      phaseCounter++
+      const phasePrefix = String(phaseCounter)
+      const { aggStart, aggEnd, aggProgress } = computeAgg(phaseTasks)
+      result.push({ kind: 'phase', phase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
+      buildPhaseEntries(phaseTasks)
     }
 
     const unassigned = tasks.filter((t) => t.phase_id === null)
@@ -511,21 +791,53 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         start_date: null,
         end_date: null,
       }
-      result.push({ kind: 'phase', phase: unassignedPhase })
-      for (const task of unassigned) {
-        result.push({ kind: 'task', task, visualIndex })
-        visualIndex++
-      }
+      phaseCounter++
+      const phasePrefix = String(phaseCounter)
+      const { aggStart, aggEnd, aggProgress } = computeAgg(unassigned)
+      result.push({ kind: 'phase', phase: unassignedPhase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
+      buildPhaseEntries(unassigned)
     }
 
     return result
-  })()
+  }, [tasks, phases])
 
   const detailTask = detailTaskId != null
     ? storeTasks.find((t) => t.id === detailTaskId) ?? null
     : null
 
-  const totalWidth = columns.reduce((sum, key) => sum + COL_DEFS[key].width, 0)
+  const ROW_NUM_WIDTH = 36
+  const totalWidth = ROW_NUM_WIDTH + columns.reduce((sum, key) => sum + colWidths[key], 0)
+
+  // Persist column widths to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(LOCAL_STORAGE_COL_WIDTHS_KEY, JSON.stringify(colWidths))
+  }, [colWidths])
+
+  // Column resize drag state
+  const colResizingRef = useRef<{ col: GanttColKey; startX: number; startWidth: number } | null>(null)
+
+  const handleColResizeMouseDown = useCallback((col: GanttColKey, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    colResizingRef.current = { col, startX: e.clientX, startWidth: colWidths[col] }
+  }, [colWidths])
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!colResizingRef.current) return
+      const { col, startX, startWidth } = colResizingRef.current
+      const delta = e.clientX - startX
+      const newWidth = Math.max(40, startWidth + delta)
+      setColWidths((prev) => ({ ...prev, [col]: newWidth }))
+    }
+    const onMouseUp = () => { colResizingRef.current = null }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
 
   const canEditTask = useCallback((task: TaskWithBaseline): boolean => {
     if (!permissions) return false
@@ -533,7 +845,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     return canVendorEditTask(permissions, task.vendor_id ?? null, currentUserId)
   }, [permissions, currentUserId])
 
-  // selectCell: セルをハイライト選択するだけ（編集開始しない）
   const selectCell = useCallback((task: TaskWithBaseline, col: GanttColKey) => {
     if (NON_EDITABLE_COLS.has(col)) return
     setSelectedCell({ taskId: task.id, col })
@@ -577,23 +888,40 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       progress?: number
     }
     const payload: PatchPayload = { id: taskId, version: task.version }
+    let beforeValue: string | number | null = null
+    let afterValue: string | number | null = null
 
     if (field === 'name') {
       const trimmed = currentValue.trim()
-      if (trimmed) payload.name = trimmed
+      if (trimmed) {
+        beforeValue = task.name
+        afterValue = trimmed
+        payload.name = trimmed
+      }
     } else if (field === 'start_date') {
+      beforeValue = task.start_date
+      afterValue = currentValue || null
       payload.start_date = currentValue || null
     } else if (field === 'end_date') {
+      beforeValue = task.end_date
+      afterValue = currentValue || null
       payload.end_date = currentValue || null
     } else if (field === 'progress') {
       const n = parseInt(currentValue, 10)
-      if (!isNaN(n)) payload.progress = Math.min(100, Math.max(0, n))
+      if (!isNaN(n)) {
+        beforeValue = task.progress
+        afterValue = Math.min(100, Math.max(0, n))
+        payload.progress = afterValue
+      }
     }
 
     if (Object.keys(payload).length <= 2) {
       committingRef.current = false
       return
     }
+
+    // Record undo command before the API call so the stack is always consistent
+    pushCommand({ taskId, field, before: beforeValue, after: afterValue })
 
     upsertTask({ ...task, ...payload } as Task)
 
@@ -616,7 +944,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     } finally {
       committingRef.current = false
     }
-  }, [upsertTask])
+  }, [upsertTask, pushCommand])
 
   const commitEdit = useCallback((task: TaskWithBaseline): Promise<void> => {
     if (!activeCell) return Promise.resolve()
@@ -708,10 +1036,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       return
     }
 
-    const firstPhase = phases.length > 0
-      ? [...phases].sort((a, b) => a.display_order - b.display_order)[0]
+    const lastPhase = phases.length > 0
+      ? [...phases].sort((a, b) => a.display_order - b.display_order).at(-1)
       : null
-    const firstPhaseId = firstPhase?.id ?? null
+    const lastPhaseId = lastPhase?.id ?? null
 
     try {
       const res = await fetch('/api/tasks', {
@@ -719,7 +1047,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: currentProject.id,
-          phase_id: firstPhaseId,
+          phase_id: lastPhaseId,
           name: trimmed,
           status: 'not_started',
           progress: 0,
@@ -752,12 +1080,21 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   // ─── Row selection ───────────────────────────────────────────────────────────
 
   // Ordered list of task IDs as displayed (for shift-range selection)
-  const displayedTaskIds = rows
-    .filter((r): r is Extract<RowEntry, { kind: 'task' }> => r.kind === 'task')
-    .map((r) => r.task.id)
+  const displayedTaskIds = useMemo(
+    () =>
+      rows
+        .filter((r): r is Extract<RowEntry, { kind: 'task' }> => r.kind === 'task')
+        .map((r) => r.task.id),
+    [rows]
+  )
 
   const handleRowSelect = useCallback((taskId: string, e: React.MouseEvent) => {
     const isMod = e.ctrlKey || e.metaKey
+
+    // Clicking any task row clears phase cell selection and the empty-row highlight
+    setSelectedPhaseCell(null)
+    setSelectedPhaseId(null)
+    setSelectedEmptyRow(null)
 
     if (e.shiftKey && selectedRowId) {
       // Range selection: select all tasks between anchor and current
@@ -769,6 +1106,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         const rangeIds = displayedTaskIds.slice(lo, hi + 1)
         setSelectedRowIds(new Set(rangeIds))
         // Keep anchor as primary selected row
+        // Focus the grid so keyboard shortcuts (e.g. Cmd+Delete) work immediately
+        gridRef.current?.focus()
         return
       }
     }
@@ -785,21 +1124,352 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         return next
       })
       setSelectedRowId(taskId)
+      // Focus the grid so keyboard shortcuts (e.g. Cmd+Delete) work immediately
+      gridRef.current?.focus()
       return
     }
 
     // Plain click: single selection
     setSelectedRowId(taskId)
     setSelectedRowIds(new Set([taskId]))
+    // Focus the grid so keyboard shortcuts (e.g. Cmd+Delete) work immediately
+    // after a plain row click, without requiring the user to click a cell first.
+    gridRef.current?.focus()
   }, [selectedRowId, displayedTaskIds])
+
+  // ─── WBS number click: select entire row(s) ─────────────────────────────────
+
+  // Click on a task's WBS number cell → select the full row (anchor=first col, head=last col).
+  // Shift+click extends the row range. Cmd+click extends range to include the clicked row.
+  // Note: onMouseDown on the WBS cell sets suppressNextWbsClickRef to prevent this from
+  // running after a drag (where the drag selection should be preserved).
+  const handleTaskWbsClick = useCallback((taskId: string, e: React.MouseEvent) => {
+    if (suppressNextWbsClickRef.current) {
+      suppressNextWbsClickRef.current = false
+      return
+    }
+    const editableCols_ = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+    if (editableCols_.length === 0) return
+
+    const firstCol = editableCols_[0]
+    const lastCol = editableCols_[editableCols_.length - 1]
+    const isMod = e.ctrlKey || e.metaKey
+
+    setSelectedPhaseCell(null)
+    setSelectedPhaseId(null)
+    setSelectedEmptyRow(null)
+    setActiveCell(null)
+
+    if (e.shiftKey && selectedRowId) {
+      // Extend row range selection (keep anchor row, update head row)
+      const anchorIdx = displayedTaskIds.indexOf(selectedRowId)
+      const currentIdx = displayedTaskIds.indexOf(taskId)
+      if (anchorIdx !== -1 && currentIdx !== -1) {
+        const lo = Math.min(anchorIdx, currentIdx)
+        const hi = Math.max(anchorIdx, currentIdx)
+        const rangeIds = displayedTaskIds.slice(lo, hi + 1)
+        setSelectedRowIds(new Set(rangeIds))
+        // Also set cell-level selection range so Cmd+C/X works on the full rows
+        setSelectionAnchor({ taskId: displayedTaskIds[lo], col: firstCol })
+        setSelectionHead({ taskId: displayedTaskIds[hi], col: lastCol })
+        setSelectedCell(null)
+        gridRef.current?.focus()
+        return
+      }
+    }
+
+    if (isMod) {
+      // Toggle individual row in selectedRowIds (flyover multi-select)
+      setSelectedRowIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(taskId)) {
+          next.delete(taskId)
+        } else {
+          next.add(taskId)
+        }
+        return next
+      })
+      setSelectedRowId(taskId)
+      setSelectionAnchor(null)
+      setSelectionHead(null)
+      setSelectedCell(null)
+      gridRef.current?.focus()
+      return
+    }
+
+    // Plain click: select this single row in full (cell range = all editable cols)
+    setSelectedRowId(taskId)
+    setSelectedRowIds(new Set([taskId]))
+    setSelectionAnchor({ taskId, col: firstCol })
+    setSelectionHead({ taskId, col: lastCol })
+    setSelectedCell(null)
+    gridRef.current?.focus()
+  }, [columns, selectedRowId, displayedTaskIds])
+
+  // Click on a phase's WBS number cell → select all tasks in that phase.
+  const handlePhaseWbsClick = useCallback((phaseId: string, e: React.MouseEvent) => {
+    const editableCols_ = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+    if (editableCols_.length === 0) return
+
+    const firstCol = editableCols_[0]
+    const lastCol = editableCols_[editableCols_.length - 1]
+
+    setSelectedEmptyRow(null)
+    setActiveCell(null)
+
+    // Collect task IDs belonging to this phase in display order
+    const phaseTaskIds = displayedTaskIds.filter((id) => {
+      const task = tasks.find((t) => t.id === id)
+      return task?.phase_id === phaseId
+    })
+    if (phaseTaskIds.length === 0) return
+
+    const firstTaskId = phaseTaskIds[0]
+    const lastTaskId = phaseTaskIds[phaseTaskIds.length - 1]
+
+    setSelectedRowId(firstTaskId)
+    setSelectedRowIds(new Set(phaseTaskIds))
+    setSelectionAnchor({ taskId: firstTaskId, col: firstCol })
+    setSelectionHead({ taskId: lastTaskId, col: lastCol })
+    setSelectedCell(null)
+    gridRef.current?.focus()
+  }, [columns, displayedTaskIds, tasks])
+
+  // ─── Phase row handlers ──────────────────────────────────────────────────────
+
+  const handlePhaseRowSelect = useCallback((phaseId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedPhaseId(phaseId)
+    setSelectedPhaseCell(null)
+    setSelectedRowId(null)
+    setSelectedRowIds(new Set())
+    setSelectionAnchor(null)
+    setSelectionHead(null)
+    setSelectedCell(null)
+    setSelectedEmptyRow(null)
+    gridRef.current?.focus()
+  }, [])
+
+  const handlePhaseCellClick = useCallback((phaseId: string, col: GanttColKey, e: React.MouseEvent) => {
+    e.stopPropagation()
+    // タスク側の選択をクリア
+    setSelectedRowId(null)
+    setSelectedRowIds(new Set())
+    setSelectionAnchor(null)
+    setSelectionHead(null)
+    setSelectedCell(null)
+    setSelectedEmptyRow(null)
+    // フェーズ行・セルを選択
+    setSelectedPhaseId(phaseId)
+    setSelectedPhaseCell({ phaseId, col })
+    gridRef.current?.focus()
+  }, [])
+
+  const handlePhaseCellMouseDown = useCallback((phaseId: string, col: GanttColKey, e: React.MouseEvent) => {
+    // 左ボタンのみ、テキスト選択を防ぐ
+    if (e.button !== 0) return
+    // name 列はダブルクリック編集があるので preventDefault しない
+    // ただし drag でのテキスト選択は防ぐ
+    e.preventDefault()
+    handlePhaseCellClick(phaseId, col, e)
+  }, [handlePhaseCellClick])
+
+  const handlePhaseNameDoubleClick = useCallback((phase: Phase) => {
+    setActivePhaseName({ phaseId: phase.id })
+    setPhaseEditValue(phase.name)
+  }, [])
+
+  const commitPhaseName = useCallback(async () => {
+    if (!activePhaseName) return
+    const { phaseId } = activePhaseName
+    const newName = phaseEditValue.trim()
+    setActivePhaseName(null)
+    if (!newName) return
+    const phase = phases.find((p) => p.id === phaseId)
+    if (!phase || newName === phase.name) return
+    upsertPhase({ ...phase, name: newName })  // optimistic
+    const res = await fetch('/api/phases', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: phaseId, name: newName }),
+    })
+    if (!res.ok) upsertPhase(phase)  // revert
+  }, [activePhaseName, phaseEditValue, phases, upsertPhase])
+
+  const handlePhaseContextMenu = useCallback((e: React.MouseEvent, phaseId: string) => {
+    e.preventDefault()
+    setSelectedPhaseId(phaseId)
+    setPhaseContextMenu({ x: e.clientX, y: e.clientY, phaseId })
+  }, [])
+
+  const deletePhaseById = useCallback(async (phaseId: string) => {
+    if (phaseId === '__unassigned__') {
+      // 未分類セクションの削除: phase_id が null のタスクをすべて削除
+      const unassigned = tasks.filter((t) => t.phase_id === null)
+      for (const t of unassigned) removeTask(t.id)
+      await Promise.all(unassigned.map((t) =>
+        fetch(`/api/tasks?id=${t.id}`, { method: 'DELETE' })
+      ))
+      return
+    }
+    const phase = phases.find((p) => p.id === phaseId)
+    if (!phase) return
+    removePhase(phaseId)  // optimistic
+    const res = await fetch(`/api/phases?id=${phaseId}`, { method: 'DELETE' })
+    if (!res.ok) upsertPhase(phase)  // revert
+  }, [phases, tasks, removeTask, removePhase, upsertPhase])
+
+  const closePhaseContextMenu = useCallback(() => setPhaseContextMenu(null), [])
+
+  const convertPhaseToTask = useCallback(async (phaseId: string) => {
+    const phase = phases.find((p) => p.id === phaseId)
+    if (!phase || !currentProject) return
+
+    // フェーズ内タスク（prop の tasks を使用）
+    const phaseTasks = tasks.filter((t) => t.phase_id === phaseId)
+
+    // 子タスクの移動先: 削除後に残る最後のフェーズ（なければ未分類）
+    const remainingPhases = phases.filter((p) => p.id !== phaseId)
+    const targetPhase = remainingPhases.length > 0
+      ? [...remainingPhases].sort((a, b) => b.display_order - a.display_order)[0]
+      : null
+    const targetPhaseId = targetPhase?.id ?? null
+
+    // 楽観的更新: フェーズ内タスクを targetPhase に移動、フェーズを削除
+    removePhase(phaseId)
+    for (const t of phaseTasks) upsertTask({ ...t, phase_id: targetPhaseId })
+
+    // PATCH: tasks の phase_id を targetPhaseId に変更
+    const patchResults = await Promise.all(phaseTasks.map((t) =>
+      fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: t.id, version: t.version, phase_id: targetPhaseId }),
+      })
+    ))
+
+    if (patchResults.some((r) => !r.ok)) {
+      upsertPhase(phase)
+      for (const t of phaseTasks) upsertTask(t)
+      return
+    }
+
+    // DELETE: フェーズ削除
+    const deleteRes = await fetch(`/api/phases?id=${phaseId}`, { method: 'DELETE' })
+    if (!deleteRes.ok) {
+      upsertPhase(phase)
+      for (const t of phaseTasks) upsertTask(t)
+      return
+    }
+
+    // フェーズ名でタスクを新規作成（末尾に追加）
+    const taskRes = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: currentProject.id,
+        phase_id: targetPhaseId,
+        name: phase.name,
+        status: 'not_started',
+        progress: 0,
+        display_order: storeTasks.length,
+      }),
+    })
+    if (taskRes.ok) {
+      const { data: newTask } = await taskRes.json() as { data: Task }
+      upsertTask(newTask)
+    }
+  }, [phases, tasks, currentProject, storeTasks.length, upsertTask, removePhase, upsertPhase])
+
+  // ─── WBS drag-selection ──────────────────────────────────────────────────────
+
+  const handleWbsMouseDown = useCallback((taskId: string, e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    // Suppress the onClick that fires after mousedown on the same element
+    suppressNextWbsClickRef.current = true
+    const editableCols_ = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+    if (editableCols_.length === 0) return
+    const firstCol = editableCols_[0]
+    const lastCol = editableCols_[editableCols_.length - 1]
+    const isMod = e.ctrlKey || e.metaKey
+
+    setSelectedEmptyRow(null)
+    setActiveCell(null)
+    setSelectedCell(null)
+
+    if (e.shiftKey) {
+      // Shift+mousedown: extend selection from the current anchor row
+      const currentAnchorId = selectionAnchorRef.current?.taskId ?? selectedRowIdRef.current
+      if (currentAnchorId) {
+        const anchorIdx = displayedTaskIds.indexOf(currentAnchorId)
+        const currentIdx = displayedTaskIds.indexOf(taskId)
+        if (anchorIdx !== -1 && currentIdx !== -1) {
+          const lo = Math.min(anchorIdx, currentIdx)
+          const hi = Math.max(anchorIdx, currentIdx)
+          setSelectedRowIds(new Set(displayedTaskIds.slice(lo, hi + 1)))
+          setSelectionHead({ taskId: displayedTaskIds[hi], col: lastCol })
+          gridRef.current?.focus()
+          return
+        }
+      }
+    }
+
+    if (isMod) {
+      // Cmd+mousedown: extend range from existing anchor to this row
+      const currentAnchorId = selectionAnchorRef.current?.taskId ?? selectedRowIdRef.current
+      if (currentAnchorId) {
+        const anchorIdx = displayedTaskIds.indexOf(currentAnchorId)
+        const currentIdx = displayedTaskIds.indexOf(taskId)
+        if (anchorIdx !== -1 && currentIdx !== -1) {
+          const lo = Math.min(anchorIdx, currentIdx)
+          const hi = Math.max(anchorIdx, currentIdx)
+          setSelectedRowIds(new Set(displayedTaskIds.slice(lo, hi + 1)))
+          setSelectionAnchor({ taskId: displayedTaskIds[lo], col: firstCol })
+          setSelectionHead({ taskId: displayedTaskIds[hi], col: lastCol })
+          gridRef.current?.focus()
+          return
+        }
+      }
+    }
+
+    // Plain mousedown: start drag from this row
+    isWbsDraggingRef.current = true
+    setSelectedRowId(taskId)
+    setSelectedRowIds(new Set([taskId]))
+    setSelectionAnchor({ taskId, col: firstCol })
+    setSelectionHead({ taskId, col: lastCol })
+    gridRef.current?.focus()
+  }, [columns, displayedTaskIds])
+
+  const handleWbsMouseEnter = useCallback((taskId: string) => {
+    if (!isWbsDraggingRef.current) return
+    const editableCols_ = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+    if (editableCols_.length === 0) return
+    const lastCol = editableCols_[editableCols_.length - 1]
+    setSelectionHead({ taskId, col: lastCol })
+
+    // Extend row-level highlight as the drag passes through rows
+    const idx = displayedTaskIds.indexOf(taskId)
+    if (idx === -1) return
+    const anchorId = selectionAnchorRef.current?.taskId
+    const anchorIdx = anchorId ? displayedTaskIds.indexOf(anchorId) : -1
+    if (anchorIdx === -1) return
+    const lo = Math.min(anchorIdx, idx)
+    const hi = Math.max(anchorIdx, idx)
+    setSelectedRowIds(new Set(displayedTaskIds.slice(lo, hi + 1)))
+  }, [columns, displayedTaskIds])
 
   // ─── Cell drag-selection ─────────────────────────────────────────────────────
 
   // Ordered list of editable columns as displayed
-  const editableCols = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+  const editableCols = useMemo(
+    () => columns.filter((c) => !NON_EDITABLE_COLS.has(c)),
+    [columns]
+  )
 
   // Compute the set of cell keys covered by the current anchor↔head rectangle
-  const selectionRange: Set<string> | null = (() => {
+  const selectionRange: Set<string> | null = useMemo(() => {
     if (!selectionAnchor || !selectionHead) return null
     const taskIds = displayedTaskIds
     const anchorRowIdx = taskIds.indexOf(selectionAnchor.taskId)
@@ -820,11 +1490,27 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       }
     }
     return set
-  })()
+  }, [selectionAnchor, selectionHead, displayedTaskIds, editableCols])
+  // Sync to ref so deleteRow always reads the latest range without stale closures
+  selectionRangeRef.current = selectionRange
 
   const handleCellMouseDown = useCallback((task: TaskWithBaseline, col: GanttColKey, e: React.MouseEvent) => {
-    // Only left button; ignore modifier-clicks used for row multi-select
-    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return
+    if (e.button !== 0 || e.ctrlKey || e.metaKey) return
+
+    // Clicking a task cell clears phase cell selection
+    setSelectedPhaseCell(null)
+    setSelectedPhaseId(null)
+
+    // Shift+Click: expand the selection range without moving selectedCell
+    if (e.shiftKey) {
+      e.preventDefault()
+      const anchor = selectionAnchorRef.current ?? (selectedCell ? { taskId: selectedCell.taskId, col: selectedCell.col } : null)
+      if (!anchor) return
+      setSelectionAnchor(anchor)
+      setSelectionHead({ taskId: task.id, col })
+      gridRef.current?.focus()
+      return
+    }
 
     // e.preventDefault() suppresses the browser's default focus-transfer, which
     // means the editing input never receives a blur event. Commit the active edit
@@ -841,7 +1527,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     setSelectionAnchor({ taskId: task.id, col })
     setSelectionHead({ taskId: task.id, col })
     setSelectedCell(null)
-  }, [commitEditWithValues])
+    setSelectedEmptyRow(null)
+    setSelectedRowId(null)
+    setSelectedRowIds(new Set())
+  }, [commitEditWithValues, selectedCell])
 
   const handleCellMouseEnter = useCallback((task: TaskWithBaseline, col: GanttColKey) => {
     if (!isDraggingCellsRef.current) return
@@ -857,10 +1546,18 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   activeCellRef.current = activeCell
   editValueRef.current = editValue
   tasksRef.current = tasks
+  // Keep delete-related state in refs so the document keydown handler always
+  // reads the latest values without going stale between renders
+  selectedRowIdsRef.current = selectedRowIds
+  selectedRowIdRef.current = selectedRowId
+  // selectionRangeRef is updated after selectionRange is computed (see below)
 
-  // End cell drag on mouseup anywhere in the document
+  // End cell drag (and WBS drag) on mouseup anywhere in the document
   useEffect(() => {
     const onMouseUp = () => {
+      // Reset WBS drag flag regardless of cell drag state
+      isWbsDraggingRef.current = false
+
       if (!isDraggingCellsRef.current) return
       isDraggingCellsRef.current = false
       const anchor = selectionAnchorRef.current
@@ -999,12 +1696,33 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   }, [removeTask])
 
   const deleteRow = useCallback(async (taskId: string) => {
-    // When multiple rows are selected, delete all of them
-    const idsToDelete = selectedRowIds.size > 1 ? [...selectedRowIds] : [taskId]
+    // Read latest values from refs to avoid stale closures when called from the
+    // document keydown handler, which captures deleteRow at registration time.
+    const currentSelectionRange = selectionRangeRef.current
+    const currentSelectedRowIds = selectedRowIdsRef.current
+    const currentSelectedRowId = selectedRowIdRef.current
+
+    // Derive the set of rows to delete:
+    // 1. If a cell-drag range is active, collect the unique row IDs from that range.
+    // 2. Otherwise fall back to the row-click selection set (selectedRowIds > 1).
+    // 3. Default to the single taskId passed by the caller.
+    let idsToDelete: string[]
+    if (currentSelectionRange && currentSelectionRange.size > 0) {
+      const rangeRowIds = new Set<string>()
+      for (const key of currentSelectionRange) {
+        const colonIdx = key.indexOf(':')
+        if (colonIdx !== -1) rangeRowIds.add(key.slice(0, colonIdx))
+      }
+      idsToDelete = [...rangeRowIds]
+    } else if (currentSelectedRowIds.size > 1) {
+      idsToDelete = [...currentSelectedRowIds]
+    } else {
+      idsToDelete = [taskId]
+    }
 
     await Promise.all(idsToDelete.map((id) => deleteSingleRow(id)))
 
-    if (idsToDelete.includes(selectedRowId ?? '')) {
+    if (idsToDelete.includes(currentSelectedRowId ?? '')) {
       setSelectedRowId(null)
     }
     setSelectedRowIds((prev) => {
@@ -1012,7 +1730,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       for (const id of idsToDelete) next.delete(id)
       return next
     })
-  }, [selectedRowIds, selectedRowId, deleteSingleRow])
+    setSelectionAnchor(null)
+    setSelectionHead(null)
+  }, [deleteSingleRow])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -1021,10 +1741,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     // Temporarily place the new task at the end; display_order will be fixed by reorder below
     const tempDisplayOrder = tasks.length
 
-    const firstPhase = phases.length > 0
-      ? [...phases].sort((a, b) => a.display_order - b.display_order)[0]
-      : null
-    const firstPhaseId = firstPhase?.id ?? null
+    const relativeTask = tasks.find((t) => t.id === relativeToTaskId)
+    const samePhaseId = relativeTask?.phase_id ?? null
 
     try {
       const res = await fetch('/api/tasks', {
@@ -1032,7 +1750,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: currentProject.id,
-          phase_id: firstPhaseId,
+          phase_id: samePhaseId,
           name: '',
           status: 'not_started',
           progress: 0,
@@ -1093,14 +1811,19 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
 
   // ─── Cell-level copy / cut / paste (TSV, Cmd+C/X/V) ─────────────────────────
 
-  // Resolve the rectangular selection as ordered (rowIds × cols)
+  // Resolve the rectangular selection as ordered (rowIds × cols).
+  // Reads anchor/head/range from refs so the closure never goes stale between renders
+  // (e.g. immediately after a mouse-drag selection that hasn't re-rendered yet).
   const resolveSelectionRect = useCallback((): { rowIds: string[]; cols: GanttColKey[] } | null => {
-    if (selectionRange && selectionAnchor && selectionHead) {
+    const currentRange = selectionRangeRef.current
+    const currentAnchor = selectionAnchorRef.current
+    const currentHead = selectionHeadRef.current
+    if (currentRange && currentAnchor && currentHead) {
       const taskIds = displayedTaskIds
-      const anchorRowIdx = taskIds.indexOf(selectionAnchor.taskId)
-      const headRowIdx = taskIds.indexOf(selectionHead.taskId)
-      const anchorColIdx = editableCols.indexOf(selectionAnchor.col)
-      const headColIdx = editableCols.indexOf(selectionHead.col)
+      const anchorRowIdx = taskIds.indexOf(currentAnchor.taskId)
+      const headRowIdx = taskIds.indexOf(currentHead.taskId)
+      const anchorColIdx = editableCols.indexOf(currentAnchor.col)
+      const headColIdx = editableCols.indexOf(currentHead.col)
       if (anchorRowIdx === -1 || headRowIdx === -1 || anchorColIdx === -1 || headColIdx === -1) return null
       const rowLo = Math.min(anchorRowIdx, headRowIdx)
       const rowHi = Math.max(anchorRowIdx, headRowIdx)
@@ -1115,17 +1838,21 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       return { rowIds: [selectedCell.taskId], cols: [selectedCell.col] }
     }
     return null
-  }, [selectionRange, selectionAnchor, selectionHead, selectedCell, displayedTaskIds, editableCols])
+  }, [selectedCell, displayedTaskIds, editableCols])
 
   const copyCellsToClipboard = useCallback(async (rect: { rowIds: string[]; cols: GanttColKey[] }) => {
+    // Read from tasksRef so that the latest task state (e.g. after a name edit) is always used,
+    // even when this callback was created before the most recent render.
+    const latestTasks = tasksRef.current
     const lines = rect.rowIds.map((rowId) => {
-      const task = tasks.find((t) => t.id === rowId)
+      const task = latestTasks.find((t) => t.id === rowId)
       if (!task) return rect.cols.map(() => '').join('\t')
       return rect.cols.map((col) => getRawValue(task, col)).join('\t')
     })
     const text = lines.join('\n')
     try {
       await navigator.clipboard.writeText(text)
+      hasCellClipboardRef.current = true
     } catch {
       // navigator.clipboard is unavailable (non-secure context) — use execCommand fallback
       const ta = document.createElement('textarea')
@@ -1136,8 +1863,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       ta.select()
       document.execCommand('copy')
       document.body.removeChild(ta)
+      hasCellClipboardRef.current = true
     }
-  }, [tasks])
+  }, [])
 
   const handleCellCopy = useCallback(async () => {
     const rect = resolveSelectionRect()
@@ -1151,6 +1879,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     await copyCellsToClipboard(rect)
 
     // Clear editable cells in the selection (name is not cleared on cut)
+    // Record each cleared cell in the undo stack using the same rules as handleCellDelete
     const patches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
     for (const rowId of rect.rowIds) {
       const task = tasks.find((t) => t.id === rowId)
@@ -1160,7 +1889,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         if (col === 'name') continue // name is not cleared on cut
         const defaultVal = getDefaultRawValue(col)
         if (col === 'progress') {
+          pushCommand({ taskId: task.id, field: 'progress', before: task.progress, after: 0 })
           payload[col] = parseInt(defaultVal, 10)
+        } else if (col === 'start_date') {
+          pushCommand({ taskId: task.id, field: 'start_date', before: task.start_date, after: null })
+          payload[col] = null
+        } else if (col === 'end_date') {
+          pushCommand({ taskId: task.id, field: 'end_date', before: task.end_date, after: null })
+          payload[col] = null
         } else {
           payload[col] = defaultVal || null
         }
@@ -1186,20 +1922,25 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         upsertTask(task as Task)
       }
     }
-  }, [resolveSelectionRect, copyCellsToClipboard, tasks, canEditTask, permissions, upsertTask])
+  }, [resolveSelectionRect, copyCellsToClipboard, tasks, canEditTask, permissions, upsertTask, pushCommand])
 
   const handleCellPaste = useCallback(async () => {
     if (!permissions?.canEdit) return
-    // Origin cell: top-left of selection range, or selectedCell
+    // Origin cell: top-left of selection range, or selectedCell.
+    // Read anchor/head from refs so we always see the latest selection
+    // even if this callback was captured before the most recent state update.
     let originTaskId: string | null = null
     let originCol: GanttColKey | null = null
 
-    if (selectionRange && selectionAnchor && selectionHead) {
+    const currentRange = selectionRangeRef.current
+    const currentAnchor = selectionAnchorRef.current
+    const currentHead = selectionHeadRef.current
+    if (currentRange && currentAnchor && currentHead) {
       const taskIds = displayedTaskIds
-      const anchorRowIdx = taskIds.indexOf(selectionAnchor.taskId)
-      const headRowIdx = taskIds.indexOf(selectionHead.taskId)
-      const anchorColIdx = editableCols.indexOf(selectionAnchor.col)
-      const headColIdx = editableCols.indexOf(selectionHead.col)
+      const anchorRowIdx = taskIds.indexOf(currentAnchor.taskId)
+      const headRowIdx = taskIds.indexOf(currentHead.taskId)
+      const anchorColIdx = editableCols.indexOf(currentAnchor.col)
+      const headColIdx = editableCols.indexOf(currentHead.col)
       originTaskId = taskIds[Math.min(anchorRowIdx, headRowIdx)]
       originCol = editableCols[Math.min(anchorColIdx, headColIdx)]
     } else if (selectedCell) {
@@ -1222,7 +1963,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     const originColIdx = editableCols.indexOf(originCol)
     if (originRowIdx === -1 || originColIdx === -1) return
 
-    const patches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
+    const patches: { task: TaskWithBaseline; beforeValues: Record<string, string | number | null>; payload: Record<string, string | number | null> }[] = []
 
     for (let r = 0; r < pasteRows.length; r++) {
       const targetRowIdx = originRowIdx + r
@@ -1232,25 +1973,41 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       if (!task || !canEditTask(task)) continue
 
       const payload: Record<string, string | number | null> = {}
+      const beforeValues: Record<string, string | number | null> = {}
       for (let c = 0; c < pasteRows[r].length; c++) {
         const targetColIdx = originColIdx + c
         if (targetColIdx >= editableCols.length) break
         const col = editableCols[targetColIdx]
         if (NON_EDITABLE_COLS.has(col)) continue
-        const rawVal = pasteRows[r][c]
-        if (col === 'progress') {
+        const rawVal = pasteRows[r][c] ?? ''
+        if (col === 'name') {
+          // Skip empty values for name (RBAC guard + required field)
+          if (!rawVal.trim()) continue
+          beforeValues[col] = task.name
+          payload[col] = rawVal.trim()
+        } else if (col === 'progress') {
           const n = parseInt(rawVal, 10)
-          payload[col] = isNaN(n) ? 0 : Math.min(100, Math.max(0, n))
+          const clamped = isNaN(n) ? 0 : Math.min(100, Math.max(0, n))
+          beforeValues[col] = task.progress
+          payload[col] = clamped
         } else if (col === 'start_date' || col === 'end_date') {
+          beforeValues[col] = task[col]
           payload[col] = rawVal || null
         } else {
+          beforeValues[col] = getRawValue(task, col)
           payload[col] = rawVal
         }
       }
-      if (Object.keys(payload).length > 0) patches.push({ task, payload })
+      if (Object.keys(payload).length > 0) patches.push({ task, beforeValues, payload })
     }
 
-    for (const { task, payload } of patches) {
+    for (const { task, beforeValues, payload } of patches) {
+      // Record each changed cell in the undo stack
+      for (const col of Object.keys(payload) as GanttColKey[]) {
+        if (col in beforeValues) {
+          pushCommand({ taskId: task.id, field: col, before: beforeValues[col], after: payload[col] })
+        }
+      }
       upsertTask({ ...task, ...payload } as Task)
       try {
         const res = await fetch('/api/tasks', {
@@ -1270,16 +2027,112 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
     }
   }, [
     permissions,
-    selectionRange,
-    selectionAnchor,
-    selectionHead,
     selectedCell,
     displayedTaskIds,
     editableCols,
     tasks,
     canEditTask,
     upsertTask,
+    pushCommand,
   ])
+
+  // Clear the selected cell range (Delete/Backspace key, no modifier)
+  // name column is skipped; other columns reset to their default empty value.
+  const handleCellDelete = useCallback(async () => {
+    if (!permissions?.canEdit) return
+    const rect = resolveSelectionRect()
+    if (!rect) return
+
+    type ClearPayload = {
+      id: string
+      version: number
+      status?: 'not_started'
+      start_date?: null
+      end_date?: null
+      progress?: number
+    }
+
+    const patches: { task: TaskWithBaseline; payload: ClearPayload }[] = []
+    for (const rowId of rect.rowIds) {
+      const task = tasks.find((t) => t.id === rowId)
+      if (!task || !canEditTask(task)) continue
+      const payload: ClearPayload = { id: task.id, version: task.version }
+      for (const col of rect.cols) {
+        if (col === 'name') continue
+        if (col === 'start_date') {
+          // Record one undo command per cell cleared
+          pushCommand({ taskId: task.id, field: 'start_date', before: task.start_date, after: null })
+          payload.start_date = null
+        } else if (col === 'end_date') {
+          pushCommand({ taskId: task.id, field: 'end_date', before: task.end_date, after: null })
+          payload.end_date = null
+        } else if (col === 'progress') {
+          pushCommand({ taskId: task.id, field: 'progress', before: task.progress, after: 0 })
+          payload.progress = 0
+        }
+        // vendor / updated_at are not editable; GanttLeftPanel has no status col
+      }
+      // Only patch if there's something beyond id+version
+      if (Object.keys(payload).length > 2) patches.push({ task, payload })
+    }
+
+    for (const { task, payload } of patches) {
+      upsertTask({ ...task, ...payload } as Task)
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (res.ok) {
+          const json = await res.json() as { data: Task }
+          upsertTask(json.data)
+        } else {
+          upsertTask(task as Task)
+        }
+      } catch {
+        upsertTask(task as Task)
+      }
+    }
+  }, [permissions, resolveSelectionRect, tasks, canEditTask, upsertTask, pushCommand])
+
+  // Paste TSV text into empty rows starting at emptyRowIndex.
+  // Used by both the keyboard shortcut (Cmd+V on empty row) and the empty-row context menu.
+  const doPasteIntoEmpty = useCallback(async (text: string, rowIndex: number) => {
+    if (!currentProject) return
+    const lines = text.split('\n')
+    const available = emptyRowCountRef.current - rowIndex
+    const limit = Math.min(lines.length, available)
+    const lastPhase = phases.length > 0
+      ? [...phases].sort((a, b) => a.display_order - b.display_order).at(-1)
+      : null
+    for (let i = 0; i < limit; i++) {
+      const cols = lines[i].split('\t')
+      const name = cols[0]?.trim() ?? ''
+      if (!name) continue
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: currentProject.id,
+            phase_id: lastPhase?.id ?? null,
+            name,
+            status: 'not_started',
+            progress: 0,
+            display_order: storeTasks.length + i,
+          }),
+        })
+        if (res.ok) {
+          const json = await res.json() as { data: Task }
+          upsertTask(json.data)
+        }
+      } catch {
+        // ignore individual row failures
+      }
+    }
+    setSelectedEmptyRow(null)
+  }, [currentProject, phases, storeTasks.length, upsertTask])
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────────────────
 
@@ -1291,18 +2144,27 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         e.target instanceof HTMLTextAreaElement
       ) return
 
-      const isMod = e.ctrlKey || e.metaKey
-      if (!selectedRowId || !permissions?.canEdit) return
+      // When the grid div has focus, handleGridKeyDown already handles Cmd+Delete.
+      // Firing here too would trigger a second deleteRow call on the same keystroke.
+      if (gridRef.current && gridRef.current.contains(e.target as Node)) return
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      const isMod = e.ctrlKey || e.metaKey
+      // Read the latest selectedRowId from ref to avoid stale closure
+      const currentSelectedRowId = selectedRowIdRef.current
+      if (!currentSelectedRowId || !permissions?.canEdit) return
+
+      // Cmd+Delete (or Cmd+Backspace): delete selected task row(s) without confirmation
+      if (isMod && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault()
-        void deleteRow(selectedRowId)
+        void deleteRow(currentSelectedRowId)
       }
     }
 
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [selectedRowId, permissions, deleteRow])
+    // selectedRowIdRef is a ref — reading it inside handler is always fresh.
+    // permissions and deleteRow are the only true dependencies here.
+  }, [permissions, deleteRow])
 
   // ─── Context menu ────────────────────────────────────────────────────────────
 
@@ -1317,14 +2179,29 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
   }, [selectedRowIds])
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
+  const closeEmptyRowContextMenu = useCallback(() => setEmptyRowContextMenu(null), [])
 
-  // Close context menu when clicking anywhere outside
+  // Close context menus when clicking anywhere outside
   useEffect(() => {
     if (!contextMenu) return
     const handler = () => closeContextMenu()
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [contextMenu, closeContextMenu])
+
+  useEffect(() => {
+    if (!emptyRowContextMenu) return
+    const handler = () => closeEmptyRowContextMenu()
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [emptyRowContextMenu, closeEmptyRowContextMenu])
+
+  useEffect(() => {
+    if (!phaseContextMenu) return
+    const handler = () => closePhaseContextMenu()
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [phaseContextMenu, closePhaseContextMenu])
 
   // Reset committingRef whenever activeCell becomes null externally
   useEffect(() => {
@@ -1335,7 +2212,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
 
   const handleGridKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     // 入力中（編集モード）は input 内の onKeyDown が担当するのでここでは処理しない
-    if (activeCell) return
+    if (activeCell || editingEmptyRowIndex !== null) return
 
     const isMod = e.ctrlKey || e.metaKey
 
@@ -1367,16 +2244,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
 
       if (isMod && e.key === 'v') {
         e.preventDefault()
-        // Paste into empty row: create a new task using clipboard text as name
-        const doPaste = async (text: string) => {
-          const value = text.split('\n')[0]?.split('\t')[0]?.trim() ?? ''
-          if (!value) return
-          await submitEmptyRow()
-          // submitEmptyRow uses emptyRowValue state; instead invoke the API directly here
-          // with the clipboard text. Reset selection after creation.
-          setSelectedEmptyRow(null)
-        }
-        navigator.clipboard.readText().then((t) => void doPaste(t)).catch(() => {
+        navigator.clipboard.readText().then((t) => void doPasteIntoEmpty(t, rowIndex)).catch(() => {
           // Cannot read clipboard; open edit mode so user can type
           setEditingEmptyRowIndex(rowIndex)
           setEmptyRowValue('')
@@ -1435,8 +2303,43 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       return
     }
 
-    // 選択中セルがなければ何もしない
+    // Ctrl+Home / Ctrl+End when no task cell is selected (e.g. empty row selected or nothing)
     if (!selectedCell) {
+      // Cmd+Delete: delete selected rows even when no individual cell is focused.
+      // deleteRow reads selectionRangeRef / selectedRowIdsRef internally, so passing
+      // any row ID from the current selection is sufficient to trigger the right path.
+      if (isMod && (e.key === 'Delete' || e.key === 'Backspace') && permissions?.canEdit) {
+        const anchor = selectionAnchorRef.current
+        const fallbackId = anchor?.taskId ?? selectedRowIdRef.current
+        if (fallbackId) {
+          e.preventDefault()
+          void deleteRow(fallbackId)
+        }
+        return
+      }
+
+      if (isMod && e.key === 'Home' && tasks.length > 0 && editableCols_.length > 0) {
+        e.preventDefault()
+        const firstTask = tasks[0]
+        setSelectedCell({ taskId: firstTask.id, col: editableCols_[0] })
+        setSelectedRowId(firstTask.id)
+        setSelectedRowIds(new Set([firstTask.id]))
+        setSelectedEmptyRow(null)
+        setSelectionAnchor(null)
+        setSelectionHead(null)
+        return
+      }
+      if (isMod && e.key === 'End' && tasks.length > 0 && editableCols_.length > 0) {
+        e.preventDefault()
+        const lastTask = tasks[tasks.length - 1]
+        setSelectedCell({ taskId: lastTask.id, col: editableCols_[editableCols_.length - 1] })
+        setSelectedRowId(lastTask.id)
+        setSelectedRowIds(new Set([lastTask.id]))
+        setSelectedEmptyRow(null)
+        setSelectionAnchor(null)
+        setSelectionHead(null)
+        return
+      }
       // 選択行があれば最初の編集可能列を選択
       if (selectedRowId) {
         const task = tasks.find((t) => t.id === selectedRowId)
@@ -1454,15 +2357,50 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
 
     const colIdx = editableCols_.indexOf(selectedCell.col)
 
-    // printable文字キー（修飾キーなし）→ セル内容をクリアして編集開始
+    // printable文字キー（修飾キーなし）→ 編集開始
+    // IME入力中（e.isComposing または e.key === 'Process'）の場合はセル内容をクリアせず
+    // フォーカスのみ当てて IME が正常に動作するようにする
     if (
       e.key.length === 1 &&
       !e.ctrlKey &&
       !e.metaKey &&
       !e.altKey
     ) {
+      if (e.nativeEvent.isComposing || e.key === 'Process') {
+        // IME composition: open edit preserving existing content so IME can compose normally
+        openCell(task as TaskWithBaseline, selectedCell.col)
+      } else {
+        e.preventDefault()
+        openCell(task as TaskWithBaseline, selectedCell.col, e.key)
+      }
+      return
+    }
+
+    // Ctrl+Home: jump to first task row, first editable column
+    if (isMod && e.key === 'Home') {
       e.preventDefault()
-      openCell(task as TaskWithBaseline, selectedCell.col, e.key)
+      if (tasks.length > 0 && editableCols_.length > 0) {
+        const firstTask = tasks[0]
+        setSelectedCell({ taskId: firstTask.id, col: editableCols_[0] })
+        setSelectedRowId(firstTask.id)
+        setSelectedRowIds(new Set([firstTask.id]))
+        setSelectionAnchor(null)
+        setSelectionHead(null)
+      }
+      return
+    }
+
+    // Ctrl+End: jump to last task row, last editable column
+    if (isMod && e.key === 'End') {
+      e.preventDefault()
+      if (tasks.length > 0 && editableCols_.length > 0) {
+        const lastTask = tasks[tasks.length - 1]
+        setSelectedCell({ taskId: lastTask.id, col: editableCols_[editableCols_.length - 1] })
+        setSelectedRowId(lastTask.id)
+        setSelectedRowIds(new Set([lastTask.id]))
+        setSelectionAnchor(null)
+        setSelectionHead(null)
+      }
       return
     }
 
@@ -1481,6 +2419,18 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       }
       case 'ArrowUp': {
         e.preventDefault()
+        if (e.shiftKey) {
+          // Shift+Arrow: expand range selection without moving selectedCell
+          const anchor = selectionAnchor ?? selectedCell
+          const currentHead = selectionHead ?? selectedCell
+          const headTaskIdx = tasks.findIndex((t) => t.id === currentHead.taskId)
+          const newHeadTaskIdx = Math.max(0, headTaskIdx - 1)
+          setSelectionAnchor(anchor)
+          setSelectionHead({ taskId: tasks[newHeadTaskIdx].id, col: currentHead.col })
+          return
+        }
+        setSelectionAnchor(null)
+        setSelectionHead(null)
         if (taskIdx > 0) {
           const prevTask = tasks[taskIdx - 1]
           setSelectedCell({ taskId: prevTask.id, col: selectedCell.col })
@@ -1491,20 +2441,44 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       }
       case 'ArrowDown': {
         e.preventDefault()
+        if (e.shiftKey) {
+          const anchor = selectionAnchor ?? selectedCell
+          const currentHead = selectionHead ?? selectedCell
+          const headTaskIdx = tasks.findIndex((t) => t.id === currentHead.taskId)
+          const newHeadTaskIdx = Math.min(tasks.length - 1, headTaskIdx + 1)
+          setSelectionAnchor(anchor)
+          setSelectionHead({ taskId: tasks[newHeadTaskIdx].id, col: currentHead.col })
+          return
+        }
+        setSelectionAnchor(null)
+        setSelectionHead(null)
         if (taskIdx < tasks.length - 1) {
           const nextTask = tasks[taskIdx + 1]
           setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
           setSelectedRowId(nextTask.id)
           setSelectedRowIds(new Set([nextTask.id]))
         } else if (emptyRowCountRef.current > 0) {
-          // Move from the last task row into the first empty row
+          // Move from the last task row into the first empty row; clear task selection highlight
           setSelectedCell(null)
+          setSelectedRowId(null)
+          setSelectedRowIds(new Set())
           setSelectedEmptyRow({ rowIndex: 0, col: NON_EDITABLE_COLS.has(selectedCell.col) ? editableCols_[0] : selectedCell.col })
         }
         return
       }
       case 'ArrowLeft': {
         e.preventDefault()
+        if (e.shiftKey) {
+          const anchor = selectionAnchor ?? selectedCell
+          const currentHead = selectionHead ?? selectedCell
+          const headColIdx = editableCols_.indexOf(currentHead.col)
+          const newHeadColIdx = Math.max(0, headColIdx - 1)
+          setSelectionAnchor(anchor)
+          setSelectionHead({ taskId: currentHead.taskId, col: editableCols_[newHeadColIdx] })
+          return
+        }
+        setSelectionAnchor(null)
+        setSelectionHead(null)
         if (colIdx > 0) {
           setSelectedCell({ taskId: selectedCell.taskId, col: editableCols_[colIdx - 1] })
         }
@@ -1512,8 +2486,33 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
       }
       case 'ArrowRight': {
         e.preventDefault()
+        if (e.shiftKey) {
+          const anchor = selectionAnchor ?? selectedCell
+          const currentHead = selectionHead ?? selectedCell
+          const headColIdx = editableCols_.indexOf(currentHead.col)
+          const newHeadColIdx = Math.min(editableCols_.length - 1, headColIdx + 1)
+          setSelectionAnchor(anchor)
+          setSelectionHead({ taskId: currentHead.taskId, col: editableCols_[newHeadColIdx] })
+          return
+        }
+        setSelectionAnchor(null)
+        setSelectionHead(null)
         if (colIdx < editableCols_.length - 1) {
           setSelectedCell({ taskId: selectedCell.taskId, col: editableCols_[colIdx + 1] })
+        }
+        return
+      }
+      case 'PageUp':
+      case 'PageDown': {
+        e.preventDefault()
+        const scrollEl = gridRef.current
+        if (!scrollEl) return
+        const delta = e.key === 'PageUp' ? -scrollEl.clientHeight : scrollEl.clientHeight
+        scrollEl.scrollBy({ top: delta, behavior: 'smooth' })
+        // Also scroll the outer panel container so the timeline stays in sync
+        const outerEl = scrollEl.parentElement?.parentElement
+        if (outerEl && outerEl.scrollHeight > outerEl.clientHeight) {
+          outerEl.scrollBy({ top: delta, behavior: 'smooth' })
         }
         return
       }
@@ -1545,20 +2544,45 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         setSelectedCell(null)
         return
       }
+      case 'Delete':
+      case 'Backspace': {
+        // Cmd+Delete: delete selected task row(s) without confirmation
+        if (isMod) {
+          e.preventDefault()
+          if (permissions?.canEdit) {
+            // deleteRow respects selectedRowIds for multi-row deletion
+            void deleteRow(selectedCell.taskId)
+            setSelectedCell(null)
+          }
+          return
+        }
+        // Delete/Backspace alone: clear the selected cell(s)
+        e.preventDefault()
+        void handleCellDelete()
+        return
+      }
     }
   }, [
     activeCell,
+    editingEmptyRowIndex,
     selectedCell,
     selectedEmptyRow,
     selectionRange,
+    selectionAnchor,
+    selectionHead,
     selectedRowId,
+    selectedRowIds,
     tasks,
     columns,
     openCell,
     handleCellCopy,
     handleCellCut,
     handleCellPaste,
+    handleCellDelete,
     submitEmptyRow,
+    permissions,
+    deleteRow,
+    doPasteIntoEmpty,
   ])
 
   return (
@@ -1569,15 +2593,44 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
           className="flex items-center border-b border-slate-200 bg-slate-50 flex-shrink-0 sticky top-0 z-10"
           style={{ height: 56 }}
         >
-          {columns.map((col) => (
-            <div
-              key={col}
-              className="flex-shrink-0 flex items-center px-2 border-r border-slate-200 text-xs font-medium text-slate-500 truncate"
-              style={{ width: COL_DEFS[col].width, height: '100%' }}
-            >
-              {COL_DEFS[col].label}
-            </div>
-          ))}
+          {/* Row number header */}
+          <div
+            className="flex-shrink-0 flex items-center justify-center border-r border-slate-200 text-xs font-medium text-slate-400"
+            style={{ width: 36, height: '100%' }}
+          >
+            #
+          </div>
+          {columns.map((col) => {
+            const isEditable = !NON_EDITABLE_COLS.has(col)
+            return (
+              <div
+                key={col}
+                className={[
+                  'flex-shrink-0 relative flex items-center px-2 border-r border-slate-200 text-xs font-medium text-slate-500 select-none overflow-hidden',
+                  isEditable ? 'cursor-pointer hover:bg-indigo-100' : '',
+                ].join(' ')}
+                style={{ width: colWidths[col], height: '100%' }}
+                onClick={() => {
+                  if (!isEditable || tasks.length === 0) return
+                  // Select entire column: anchor = first task row, head = last task row
+                  setSelectionAnchor({ taskId: tasks[0].id, col })
+                  setSelectionHead({ taskId: tasks[tasks.length - 1].id, col })
+                  setSelectedCell(null)
+                  setSelectedRowId(null)
+                  setSelectedRowIds(new Set())
+                  gridRef.current?.focus()
+                }}
+              >
+                <span className="truncate">{COL_LABELS[col]}</span>
+                {/* Drag handle for column resize */}
+                <div
+                  className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-indigo-300 z-10"
+                  onMouseDown={(e) => handleColResizeMouseDown(col, e)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+            )
+          })}
         </div>
 
         {/* Rows */}
@@ -1602,29 +2655,58 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
         >
           {rows.map((row) => {
             if (row.kind === 'phase') {
+              const phaseId = row.phase.id
+              const isEditingPhaseName = activePhaseName?.phaseId === phaseId
               return (
                 <PhaseRow
-                  key={`phase-${row.phase.id}`}
+                  key={`phase-${phaseId}`}
                   phase={row.phase}
                   rowHeight={rowHeight}
                   columns={columns}
+                  colWidths={colWidths}
+                  wbsNumber={row.wbsNumber}
+                  aggStart={row.aggStart}
+                  aggEnd={row.aggEnd}
+                  aggProgress={row.aggProgress}
+                  isSelected={selectedPhaseId === phaseId}
+                  isEditing={isEditingPhaseName}
+                  editValue={phaseEditValue}
+                  onEditValueChange={setPhaseEditValue}
+                  onCommitEdit={() => { void commitPhaseName() }}
+                  onCancelEdit={() => setActivePhaseName(null)}
+                  onNameDoubleClick={() => handlePhaseNameDoubleClick(row.phase)}
+                  onRowSelect={(e) => handlePhaseRowSelect(phaseId, e)}
+                  onContextMenu={(e) => handlePhaseContextMenu(e, phaseId)}
+                  onWbsClick={phaseId !== '__unassigned__' ? (e) => handlePhaseWbsClick(phaseId, e) : undefined}
+                  onWbsMouseDown={phaseId !== '__unassigned__' ? (e) => {
+                    if (e.button !== 0) return
+                    e.preventDefault()
+                    handlePhaseWbsClick(phaseId, e)
+                    isWbsDraggingRef.current = true
+                  } : undefined}
+                  selectedCol={selectedPhaseCell?.phaseId === phaseId ? selectedPhaseCell.col : null}
+                  onCellClick={(col, e) => handlePhaseCellClick(phaseId, col, e)}
+                  onCellMouseDown={(col, e) => handlePhaseCellMouseDown(phaseId, col, e)}
                 />
               )
             }
 
-            const { task, visualIndex } = row
+            const { task, visualIndex, wbsNumber } = row
             return (
               <TaskRow
                 key={task.id}
                 task={task}
                 rowHeight={rowHeight}
                 columns={columns}
+                colWidths={colWidths}
                 rowIndex={visualIndex}
+                wbsNumber={wbsNumber}
                 activeCell={activeCell}
                 selectedCell={selectedCell}
                 editValue={editValue}
                 isSelected={selectedRowIds.has(task.id)}
                 selectionRange={selectionRange}
+                wrapText={wrapText}
                 onEditValueChange={setEditValue}
                 onCellClick={selectCell}
                 onCellDoubleClick={openCell}
@@ -1636,6 +2718,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
                 onContextMenu={handleContextMenu}
                 onCellMouseDown={handleCellMouseDown}
                 onCellMouseEnter={handleCellMouseEnter}
+                onWbsClick={handleTaskWbsClick}
+                onWbsMouseDown={handleWbsMouseDown}
+                onWbsMouseEnter={handleWbsMouseEnter}
               />
             )
           })}
@@ -1650,6 +2735,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
                 key={`empty-${i}`}
                 rowHeight={rowHeight}
                 columns={columns}
+                colWidths={colWidths}
                 rowIndex={tasks.length + i}
                 isEditing={editingEmptyRowIndex === i}
                 editValue={emptyRowValue}
@@ -1667,15 +2753,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
                   setSelectedCell(null)
                   setSelectionAnchor(null)
                   setSelectionHead(null)
+                  // Clear row-level selection so previous task highlights are removed
+                  setSelectedRowId(null)
+                  setSelectedRowIds(new Set())
                   gridRef.current?.focus()
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setEmptyRowContextMenu({ x: e.clientX, y: e.clientY, rowIndex: i })
                 }}
               />
             ))
           })()}
         </div>
 
-        {permissions?.canEdit && (
-          <div className="flex justify-start px-2 py-1 flex-shrink-0">
+        <div className="flex items-center gap-4 px-2 py-1 flex-shrink-0">
+          {permissions?.canEdit && (
             <button
               type="button"
               className="text-slate-400 hover:text-slate-600 text-sm"
@@ -1683,8 +2776,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
             >
               + 10行追加
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {detailTask != null && (
@@ -1722,10 +2815,78 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions }: Gantt
             void pasteRow(contextMenu.taskId)
           }}
           onDelete={() => {
+            const taskId = contextMenu.taskId
             closeContextMenu()
-            void deleteRow(contextMenu.taskId)
+            void deleteRow(taskId)
           }}
         />
+      )}
+
+      {phaseContextMenu != null && (
+        <PhaseContextMenu
+          x={phaseContextMenu.x}
+          y={phaseContextMenu.y}
+          canEdit={!!permissions?.canEdit}
+          isUnassigned={phaseContextMenu.phaseId === '__unassigned__'}
+          onRename={() => {
+            closePhaseContextMenu()
+            const phase = phases.find((p) => p.id === phaseContextMenu.phaseId)
+            if (phase) handlePhaseNameDoubleClick(phase)
+          }}
+          onDelete={() => {
+            closePhaseContextMenu()
+            void deletePhaseById(phaseContextMenu.phaseId)
+          }}
+          onConvertToTask={() => {
+            closePhaseContextMenu()
+            void convertPhaseToTask(phaseContextMenu.phaseId)
+          }}
+        />
+      )}
+
+      {emptyRowContextMenu != null && (
+        <div
+          className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
+          style={{ left: emptyRowContextMenu.x, top: emptyRowContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              const rowIndex = emptyRowContextMenu.rowIndex
+              closeEmptyRowContextMenu()
+              setEditingEmptyRowIndex(rowIndex)
+              setEmptyRowValue('')
+              setSelectedEmptyRow(null)
+            }}
+            className="w-full flex items-center px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
+          >
+            タスクを追加
+          </button>
+          {(() => {
+            const rowIndex = emptyRowContextMenu.rowIndex
+            const canPaste = hasCellClipboardRef.current || clipboard !== null
+            return (
+              <button
+                disabled={!canPaste}
+                onClick={() => {
+                  closeEmptyRowContextMenu()
+                  navigator.clipboard.readText().then((t) => void doPasteIntoEmpty(t, rowIndex)).catch(() => {
+                    // Cannot read OS clipboard; silently ignore
+                  })
+                }}
+                className={[
+                  'w-full flex items-center justify-between px-3 py-1.5 text-xs text-left',
+                  canPaste
+                    ? 'text-slate-700 hover:bg-indigo-50 cursor-pointer'
+                    : 'text-slate-300 cursor-not-allowed',
+                ].join(' ')}
+              >
+                <span>貼り付け</span>
+                <span className="ml-4 text-slate-400">Ctrl+V</span>
+              </button>
+            )
+          })()}
+        </div>
       )}
     </>
   )

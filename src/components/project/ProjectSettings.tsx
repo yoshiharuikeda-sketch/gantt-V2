@@ -185,6 +185,11 @@ export function ProjectSettings({
   }
 
   async function handleRoleChange(memberId: string, newRole: UserRole) {
+    // Capture the current role before optimistic update so we can revert accurately
+    // even in long-lived sessions where initialMembers may be stale
+    const previousRole = members.find((m) => m.id === memberId)?.role
+    if (!previousRole) return
+
     setRoleChangingIds((prev) => new Set(prev).add(memberId))
     setGlobalError(null)
     // Optimistic update
@@ -207,12 +212,9 @@ export function ProjectSettings({
     } catch (err) {
       console.error('Role change failed:', err)
       setGlobalError(err instanceof Error ? err.message : 'ロール変更に失敗しました')
-      // Revert
+      // Revert to the role that was current at the time of this call, not the initial prop value
       setMembers((prev) =>
-        prev.map((m) => {
-          const original = initialMembers.find((im) => im.id === m.id)
-          return m.id === memberId && original ? { ...m, role: original.role } : m
-        })
+        prev.map((m) => (m.id === memberId ? { ...m, role: previousRole } : m))
       )
     } finally {
       setRoleChangingIds((prev) => {

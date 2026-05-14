@@ -1,7 +1,9 @@
 'use client'
 
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
+import { Undo2, Redo2 } from 'lucide-react'
 import { useUiStore } from '@/store/uiStore'
 import { useProjectStore } from '@/store/projectStore'
 import { useTaskStore } from '@/store/taskStore'
@@ -14,14 +16,15 @@ import { GanttHeader } from './GanttHeader'
 import { GanttBar } from './GanttBar'
 import { GanttLeftPanel } from './GanttLeftPanel'
 import { BaselineToggle } from './BaselineToggle'
-import { AddPhaseDialog } from './AddPhaseDialog'
 import { useVendorFilter } from '@/hooks/useVendorFilter'
+import { useUndoRedo } from '@/hooks/useUndoRedo'
 import type { ZoomLevel, TaskWithBaseline } from '@/types'
 
 const ROW_HEIGHT = 40
-const INITIAL_LEFT_PANEL_WIDTH = 320
+// Default width accommodates all columns (WBS col 36 + sum of default column widths)
+const INITIAL_LEFT_PANEL_WIDTH = 666
 const MIN_LEFT_PANEL_WIDTH = 200
-const MAX_LEFT_PANEL_WIDTH = 600
+const MAX_LEFT_PANEL_WIDTH = 900
 const MIN_ROWS = 30
 
 /**
@@ -38,7 +41,6 @@ function buildTaskRowMap(
 
   for (const phase of sortedPhases) {
     const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
-    if (phaseTasks.length === 0) continue
     row++ // phase header row
     for (const task of phaseTasks) {
       rowMap.set(task.id, row)
@@ -64,7 +66,17 @@ export function GanttChart() {
   const ganttColumns = useUiStore((s) => s.ganttColumns)
   const setZoomLevel = useUiStore((s) => s.setZoomLevel)
   const permissions = useProjectStore((s) => s.permissions)
+  const currentProject = useProjectStore((s) => s.currentProject)
   const phases = useTaskStore((s) => s.phases)
+  const upsertPhase = useTaskStore((s) => s.upsertPhase)
+  const upsertTask = useTaskStore((s) => s.upsertTask)
+  const removeTask = useTaskStore((s) => s.removeTask)
+  const storeTasks = useTaskStore((s) => s.tasks)
+
+  // activeCellRef is set by GanttLeftPanel; we hold a ref here so the useUndoRedo
+  // isEditing check can read it without stale closures.
+  const activeCellRef = useRef(false)
+  const { pushCommand, undo, redo, canUndo, canRedo } = useUndoRedo(() => activeCellRef.current)
 
   const tasksWithBaseline = useBaselineOverlay()
 
@@ -85,6 +97,49 @@ export function GanttChart() {
   const isDraggingPanel = useRef(false)
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
+
+  const [selectedTaskIdForConversion, setSelectedTaskIdForConversion] = useState<string | null>(null)
+
+  const convertTaskToPhase = useCallback(async (taskId: string) => {
+    const task = storeTasks.find((t) => t.id === taskId)
+    if (!task || !currentProject) return
+
+    // Optimistic delete
+    removeTask(taskId)
+    setSelectedTaskIdForConversion(null)
+
+    // Create phase
+    const phaseRes = await fetch('/api/phases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: currentProject.id,
+        name: task.name,
+        display_order: phases.length,
+        color: '#6366F1',
+        start_date: null,
+        end_date: null,
+      }),
+    })
+    if (!phaseRes.ok) { upsertTask(task); return }
+    const { data: newPhase } = await phaseRes.json() as { data: import('@/types').Phase }
+    upsertPhase(newPhase)
+
+    // Move child tasks to new phase
+    const childTasks = storeTasks.filter((t) => t.parent_task_id === taskId)
+    await Promise.all(childTasks.map(async (child) => {
+      const updated = { ...child, phase_id: newPhase.id, parent_task_id: null }
+      upsertTask(updated)
+      await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: child.id, version: child.version, phase_id: newPhase.id, parent_task_id: null }),
+      })
+    }))
+
+    // Delete original task
+    await fetch(`/api/tasks?id=${taskId}`, { method: 'DELETE' })
+  }, [storeTasks, currentProject, phases, upsertPhase, upsertTask, removeTask])
 
   const onPanelDividerMouseDown = useCallback((e: React.MouseEvent) => {
     isDraggingPanel.current = true
@@ -203,11 +258,7 @@ export function GanttChart() {
 
   // Total visual rows = phase headers + task rows + empty padding rows
   const phaseHeaderCount = useMemo(() => {
-    const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
-    let count = 0
-    for (const phase of sortedPhases) {
-      if (displayRows.tasks.some((t) => t.phase_id === phase.id)) count++
-    }
+    let count = phases.length
     if (displayRows.tasks.some((t) => t.phase_id === null)) count++
     return count
   }, [phases, displayRows.tasks])
@@ -224,7 +275,36 @@ export function GanttChart() {
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200 bg-white flex-shrink-0">
         <div className="flex items-center gap-2">
           <BaselineToggle />
-          {permissions?.canEdit && <AddPhaseDialog />}
+          {permissions?.canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-1"
+              disabled={!selectedTaskIdForConversion}
+              onClick={() => { if (selectedTaskIdForConversion) void convertTaskToPhase(selectedTaskIdForConversion) }}
+              title="選択したタスクをフェーズに変換"
+            >
+              フェーズ化
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!canUndo}
+            onClick={undo}
+            title="元に戻す (Cmd+Z)"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!canRedo}
+            onClick={redo}
+            title="やり直し (Cmd+Shift+Z)"
+          >
+            <Redo2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
         <div className="flex items-center gap-1">
           {ZOOM_LEVELS.map((z) => (
@@ -253,6 +333,9 @@ export function GanttChart() {
             rowHeight={ROW_HEIGHT}
             columns={ganttColumns}
             permissions={permissions}
+            pushCommand={pushCommand}
+            onEditingChange={(editing) => { activeCellRef.current = editing }}
+            onSelectedRowChange={(id) => setSelectedTaskIdForConversion(id)}
           />
         </div>
 
@@ -306,7 +389,8 @@ export function GanttChart() {
                 style={{ left: todayX }}
               />
 
-              {/* Task bars */}
+              {/* Task bars — one TooltipProvider for all bars to avoid per-bar provider overhead */}
+              <TooltipProvider>
               {displayRows.tasks.map((task) => {
                 if (!task.start_date || !task.end_date) return null
 
@@ -337,6 +421,7 @@ export function GanttChart() {
                   </div>
                 )
               })}
+              </TooltipProvider>
             </div>
           </div>
         </div>

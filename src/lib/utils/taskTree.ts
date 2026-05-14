@@ -1,4 +1,4 @@
-import type { Task, TaskWithDetails } from '@/types'
+import type { Task, TaskWithDetails, Phase } from '@/types'
 
 /**
  * フラットなタスク配列を木構造に変換し、各タスクに depth と children を付与する。
@@ -33,6 +33,48 @@ export function buildTaskTree(tasks: Task[]): TaskWithDetails[] {
   }
 
   return roots
+}
+
+/**
+ * フェーズ・タスクの表示順から WBS 番号マップを構築する。
+ * キー: task.id, 値: "1.1.2" のような WBS 番号文字列。
+ * depth フィールドを持つ型（TaskWithDetails 等）にも、
+ * depth を持たない Task にも対応（depth なしの場合は 0 とみなす）。
+ */
+export function buildWbsNumberMap(
+  tasks: Task[],
+  phases: Phase[]
+): Map<string, string> {
+  const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
+  const map = new Map<string, string>()
+  let phaseCounter = 0
+
+  const processGroup = (groupTasks: Task[], phasePrefix: string) => {
+    const counters: number[] = []
+    for (const task of groupTasks) {
+      const d = (task as { depth?: number }).depth ?? 0
+      while (counters.length <= d) counters.push(0)
+      counters.splice(d + 1)
+      counters[d] = (counters[d] ?? 0) + 1
+      const suffix = counters.slice(0, d + 1).join('.')
+      map.set(task.id, `${phasePrefix}.${suffix}`)
+    }
+  }
+
+  for (const phase of sortedPhases) {
+    const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
+    if (phaseTasks.length === 0) continue
+    phaseCounter++
+    processGroup(phaseTasks, String(phaseCounter))
+  }
+
+  const unassigned = tasks.filter((t) => t.phase_id === null)
+  if (unassigned.length > 0) {
+    phaseCounter++
+    processGroup(unassigned, String(phaseCounter))
+  }
+
+  return map
 }
 
 /**
