@@ -355,6 +355,7 @@ export function GanttChart() {
             pushCommand={pushCommand}
             onEditingChange={(editing) => { activeCellRef.current = editing }}
             onSelectedRowChange={(id) => setSelectedTaskIdForConversion(id)}
+            containerWidth={leftWidth}
           />
         </div>
 

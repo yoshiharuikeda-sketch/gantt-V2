@@ -104,6 +104,8 @@ interface GanttLeftPanelProps {
   onEditingChange: (isEditing: boolean) => void
   /** Called whenever the primary selected row changes (null = deselected) */
   onSelectedRowChange?: (taskId: string | null) => void
+  /** Width of the left panel container (from the drag divider). Used to compute dynamic name column width. */
+  containerWidth: number
 }
 
 // ─── PhaseRow ─────────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ function PhaseRow({
         className="flex-shrink-0"
         style={{ width: 4, height: '100%', backgroundColor: phase.color }}
       />
-      {/* WBS number cell */}
+      {/* WBS number cell — 32px wide; combined with the 4px color bar = 36px total, matching TaskRow */}
       <div
         className={`flex-shrink-0 flex items-center justify-center border-r border-slate-200 px-1 ${onWbsClick ? 'cursor-pointer hover:bg-indigo-100' : ''}`}
         style={{ width: 32, height: '100%' }}
@@ -195,34 +197,43 @@ function PhaseRow({
       >
         <span className="text-xs font-bold text-slate-400 select-none truncate">{wbsNumber}</span>
       </div>
-      {/* Collapse toggle button */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggleCollapse() }}
-        className="flex-shrink-0 flex items-center justify-center w-5 h-full text-slate-400 hover:text-slate-600"
-        title={isCollapsed ? '展開' : '折りたたむ'}
-      >
-        {isCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-      </button>
       {/* Column cells */}
       {columns.map((col) => {
         let content: React.ReactNode = null
         if (col === 'name') {
+          // Collapse toggle button lives inside the name cell to keep the WBS zone at 36px (4+32),
+          // matching TaskRow's 36px WBS cell and preserving column alignment.
+          const toggleBtn = (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleCollapse() }}
+              className="flex-shrink-0 flex items-center justify-center w-4 h-full text-slate-400 hover:text-slate-600 mr-1"
+              title={isCollapsed ? '展開' : '折りたたむ'}
+            >
+              {isCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+          )
           content = isEditing ? (
-            <input
-              autoFocus
-              type="text"
-              value={editValue}
-              onChange={(e) => onEditValueChange(e.target.value)}
-              onBlur={onCommitEdit}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') { e.preventDefault(); onCancelEdit(); return }
-                if (e.key === 'Enter') { e.preventDefault(); onCommitEdit(); return }
-              }}
-              className="w-full text-xs font-bold bg-transparent border-none outline-none text-slate-700"
-              onClick={(e) => e.stopPropagation()}
-            />
+            <>
+              {toggleBtn}
+              <input
+                autoFocus
+                type="text"
+                value={editValue}
+                onChange={(e) => onEditValueChange(e.target.value)}
+                onBlur={onCommitEdit}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') { e.preventDefault(); onCancelEdit(); return }
+                  if (e.key === 'Enter') { e.preventDefault(); onCommitEdit(); return }
+                }}
+                className="w-full text-xs font-bold bg-transparent border-none outline-none text-slate-700"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </>
           ) : (
-            <span className="text-xs font-bold text-slate-700 truncate w-full">{phase.name}</span>
+            <>
+              {toggleBtn}
+              <span className="text-xs font-bold text-slate-700 truncate">{phase.name}</span>
+            </>
           )
         } else if (col === 'start_date') {
           content = <span className="text-xs text-slate-500 truncate">{fmtDate(aggStart)}</span>
@@ -246,7 +257,7 @@ function PhaseRow({
               isCellSelectable && isCellSelected ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50' : '',
               col === 'name' && !isEditing ? 'cursor-pointer' : isCellSelectable ? 'cursor-default' : '',
             ].filter(Boolean).join(' ')}
-            style={{ width: colWidths[col], height: '100%', paddingLeft: 8, paddingRight: 8 }}
+            style={{ width: colWidths[col], height: '100%', paddingLeft: col === 'name' ? 4 : 8, paddingRight: 8 }}
             onDoubleClick={col === 'name' ? (e) => { e.stopPropagation(); onNameDoubleClick() } : undefined}
             onClick={(e) => {
               e.stopPropagation()
@@ -655,7 +666,7 @@ function getDefaultRawValue(col: GanttColKey): string {
   }
 }
 
-export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange }: GanttLeftPanelProps) {
+export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange, containerWidth }: GanttLeftPanelProps) {
   const currentUserId = useProjectStore((s) => s.currentUserId)
   const currentProject = useProjectStore((s) => s.currentProject)
   const upsertTask = useTaskStore((s) => s.upsertTask)
@@ -834,11 +845,29 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     : null
 
   const ROW_NUM_WIDTH = 36
-  const totalWidth = ROW_NUM_WIDTH + columns.reduce((sum, key) => sum + colWidths[key], 0)
+  const MIN_NAME_WIDTH = 80
 
-  // Persist column widths to localStorage whenever they change
+  // Dynamically compute name column width so the panel fills exactly `containerWidth`
+  // (the drag-divider position). Other fixed columns keep their stored widths.
+  const effectiveColWidths = useMemo<Record<GanttColKey, number>>(() => {
+    const otherWidth = columns
+      .filter((c) => c !== 'name')
+      .reduce((sum, c) => sum + colWidths[c], 0)
+    const available = containerWidth - ROW_NUM_WIDTH - otherWidth
+    const dynamicNameWidth = Math.max(available, MIN_NAME_WIDTH)
+    return { ...colWidths, name: dynamicNameWidth }
+  }, [containerWidth, columns, colWidths])
+
+  const totalWidth = ROW_NUM_WIDTH + columns.reduce((sum, key) => sum + effectiveColWidths[key], 0)
+
+  // Persist column widths to localStorage whenever they change.
+  // name is excluded because it's dynamically computed from containerWidth.
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_COL_WIDTHS_KEY, JSON.stringify(colWidths))
+    const persisted: Partial<Record<GanttColKey, number>> = {}
+    for (const key of Object.keys(colWidths) as GanttColKey[]) {
+      if (key !== 'name') persisted[key] = colWidths[key]
+    }
+    localStorage.setItem(LOCAL_STORAGE_COL_WIDTHS_KEY, JSON.stringify(persisted))
   }, [colWidths])
 
   // Column resize drag state
@@ -2650,7 +2679,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                   'flex-shrink-0 relative flex items-center px-2 border-r border-slate-200 text-xs font-medium text-slate-500 select-none overflow-hidden',
                   isEditable ? 'cursor-pointer hover:bg-indigo-100' : '',
                 ].join(' ')}
-                style={{ width: colWidths[col], height: '100%' }}
+                style={{ width: effectiveColWidths[col], height: '100%' }}
                 onClick={() => {
                   if (!isEditable || tasks.length === 0) return
                   // Select entire column: anchor = first task row, head = last task row
@@ -2704,7 +2733,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                   phase={row.phase}
                   rowHeight={rowHeight}
                   columns={columns}
-                  colWidths={colWidths}
+                  colWidths={effectiveColWidths}
                   wbsNumber={row.wbsNumber}
                   aggStart={row.aggStart}
                   aggEnd={row.aggEnd}
@@ -2741,7 +2770,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 task={task}
                 rowHeight={rowHeight}
                 columns={columns}
-                colWidths={colWidths}
+                colWidths={effectiveColWidths}
                 rowIndex={visualIndex}
                 wbsNumber={wbsNumber}
                 activeCell={activeCell}
@@ -2779,7 +2808,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 key={`empty-${i}`}
                 rowHeight={rowHeight}
                 columns={columns}
-                colWidths={colWidths}
+                colWidths={effectiveColWidths}
                 rowIndex={visibleTaskCount + i}
                 isEditing={editingEmptyRowIndex === i}
                 editValue={emptyRowValue}
