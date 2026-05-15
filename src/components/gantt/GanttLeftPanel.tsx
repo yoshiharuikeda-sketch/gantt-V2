@@ -2412,9 +2412,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         return
       }
       case 'Enter': {
-        // 内容保持で編集開始（Excelと同じ挙動）
+        // Excelと同様：1行下のセルに移動（編集モードには入らない）
         e.preventDefault()
-        openCell(task as TaskWithBaseline, selectedCell.col)
+        setSelectionAnchor(null)
+        setSelectionHead(null)
+        if (taskIdx < tasks.length - 1) {
+          const nextTask = tasks[taskIdx + 1]
+          setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
+          setSelectedRowId(nextTask.id)
+          setSelectedRowIds(new Set([nextTask.id]))
+        } else if (emptyRowCountRef.current > 0) {
+          // 最終タスク行 → 最初の空白行へ
+          setSelectedCell(null)
+          setSelectedRowId(null)
+          setSelectedRowIds(new Set())
+          setSelectedEmptyRow({ rowIndex: 0, col: NON_EDITABLE_COLS.has(selectedCell.col) ? editableCols_[0] : selectedCell.col })
+        }
         return
       }
       case 'ArrowUp': {
