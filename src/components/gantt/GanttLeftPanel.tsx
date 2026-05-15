@@ -1,10 +1,12 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { format, parseISO } from '@/lib/utils/dateUtils'
 import { useTaskStore } from '@/store/taskStore'
 import { useProjectStore } from '@/store/projectStore'
+import { useUiStore } from '@/store/uiStore'
 import { canVendorEditTask } from '@/types/rbac'
 import { TaskDetailModal } from '@/components/task/TaskDetailModal'
 import type { UndoCommand } from '@/hooks/useUndoRedo'
@@ -131,6 +133,9 @@ interface PhaseRowProps {
   selectedCol: GanttColKey | null
   onCellClick: (col: GanttColKey, e: React.MouseEvent) => void
   onCellMouseDown: (col: GanttColKey, e: React.MouseEvent) => void
+  // 折りたたみ
+  isCollapsed: boolean
+  onToggleCollapse: () => void
 }
 
 function PhaseRow({
@@ -157,6 +162,8 @@ function PhaseRow({
   selectedCol,
   onCellClick,
   onCellMouseDown,
+  isCollapsed,
+  onToggleCollapse,
 }: PhaseRowProps) {
   const baseRowBg = isSelected ? 'bg-indigo-100' : 'bg-slate-100'
 
@@ -188,6 +195,14 @@ function PhaseRow({
       >
         <span className="text-xs font-bold text-slate-400 select-none truncate">{wbsNumber}</span>
       </div>
+      {/* Collapse toggle button */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleCollapse() }}
+        className="flex-shrink-0 flex items-center justify-center w-5 h-full text-slate-400 hover:text-slate-600"
+        title={isCollapsed ? '展開' : '折りたたむ'}
+      >
+        {isCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
       {/* Column cells */}
       {columns.map((col) => {
         let content: React.ReactNode = null
@@ -647,6 +662,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const removeTask = useTaskStore((s) => s.removeTask)
   const storeTasks = useTaskStore((s) => s.tasks)
   const phases = useTaskStore((s) => s.phases)
+  const collapsedPhaseIds = useUiStore((s) => s.collapsedPhaseIds)
+  const togglePhaseCollapse = useUiStore((s) => s.togglePhaseCollapse)
   const reorderTasks = useTaskStore((s) => s.reorderTasks)
   const upsertPhase = useTaskStore((s) => s.upsertPhase)
   const removePhase = useTaskStore((s) => s.removePhase)
@@ -800,6 +817,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     return result
   }, [tasks, phases])
+
+  // 折りたたまれたフェーズのタスク行を除外した表示用リスト
+  const visibleRows = useMemo(() =>
+    rows.filter((row) => {
+      if (row.kind === 'task') {
+        const phaseId = row.task.phase_id ?? '__unassigned__'
+        return !collapsedPhaseIds.has(phaseId)
+      }
+      return true // phase行は常に表示
+    }),
+  [rows, collapsedPhaseIds])
 
   const detailTask = detailTaskId != null
     ? storeTasks.find((t) => t.id === detailTaskId) ?? null
@@ -2666,7 +2694,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             if (editingTask) void commitEditWithValues(cell, editValueRef.current, editingTask)
           }}
         >
-          {rows.map((row) => {
+          {visibleRows.map((row) => {
             if (row.kind === 'phase') {
               const phaseId = row.phase.id
               const isEditingPhaseName = activePhaseName?.phaseId === phaseId
@@ -2697,6 +2725,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                     handlePhaseWbsClick(phaseId, e)
                     isWbsDraggingRef.current = true
                   } : undefined}
+                  isCollapsed={collapsedPhaseIds.has(phaseId)}
+                  onToggleCollapse={() => togglePhaseCollapse(phaseId)}
                   selectedCol={selectedPhaseCell?.phaseId === phaseId ? selectedPhaseCell.col : null}
                   onCellClick={(col, e) => handlePhaseCellClick(phaseId, col, e)}
                   onCellMouseDown={(col, e) => handlePhaseCellMouseDown(phaseId, col, e)}
@@ -2740,7 +2770,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
           {permissions?.canEdit && (() => {
             const MIN_TOTAL_ROWS = 20
-            const emptyRowCount = Math.max(MIN_TOTAL_ROWS - tasks.length, 0) + extraEmptyRows
+            const visibleTaskCount = visibleRows.filter((r) => r.kind === 'task').length
+            const emptyRowCount = Math.max(MIN_TOTAL_ROWS - visibleTaskCount, 0) + extraEmptyRows
             // Keep ref in sync so handleGridKeyDown can read the latest count without stale closures
             emptyRowCountRef.current = emptyRowCount
             return Array.from({ length: emptyRowCount }).map((_, i) => (
@@ -2749,7 +2780,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 rowHeight={rowHeight}
                 columns={columns}
                 colWidths={colWidths}
-                rowIndex={tasks.length + i}
+                rowIndex={visibleTaskCount + i}
                 isEditing={editingEmptyRowIndex === i}
                 editValue={emptyRowValue}
                 selectedCol={selectedEmptyRow?.rowIndex === i ? selectedEmptyRow.col : null}

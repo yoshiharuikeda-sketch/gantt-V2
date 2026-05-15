@@ -30,10 +30,12 @@ const MIN_ROWS = 30
 /**
  * Build a map from taskId → visual row index, accounting for phase header rows.
  * This must mirror the row-building logic in GanttLeftPanel so bar positions align.
+ * collapsedPhaseIds: phases whose task rows are hidden (tasks are skipped in the map).
  */
 function buildTaskRowMap(
   tasks: TaskWithBaseline[],
   phases: { id: string; display_order: number }[],
+  collapsedPhaseIds: Set<string>,
 ): Map<string, number> {
   const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
   const rowMap = new Map<string, number>()
@@ -42,18 +44,22 @@ function buildTaskRowMap(
   for (const phase of sortedPhases) {
     const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
     row++ // phase header row
-    for (const task of phaseTasks) {
-      rowMap.set(task.id, row)
-      row++
+    if (!collapsedPhaseIds.has(phase.id)) {
+      for (const task of phaseTasks) {
+        rowMap.set(task.id, row)
+        row++
+      }
     }
   }
 
   const unassigned = tasks.filter((t) => t.phase_id === null)
   if (unassigned.length > 0) {
     row++ // unassigned phase header row
-    for (const task of unassigned) {
-      rowMap.set(task.id, row)
-      row++
+    if (!collapsedPhaseIds.has('__unassigned__')) {
+      for (const task of unassigned) {
+        rowMap.set(task.id, row)
+        row++
+      }
     }
   }
 
@@ -65,6 +71,7 @@ export function GanttChart() {
   const zoomLevel = useUiStore((s) => s.zoomLevel)
   const ganttColumns = useUiStore((s) => s.ganttColumns)
   const setZoomLevel = useUiStore((s) => s.setZoomLevel)
+  const collapsedPhaseIds = useUiStore((s) => s.collapsedPhaseIds)
   const permissions = useProjectStore((s) => s.permissions)
   const currentProject = useProjectStore((s) => s.currentProject)
   const phases = useTaskStore((s) => s.phases)
@@ -251,19 +258,31 @@ export function GanttChart() {
 
   // Build a phase-aware row map so bar positions match the left panel layout.
   // Each phase header occupies one row, so task rows are offset accordingly.
+  // collapsedPhaseIds mirrors the left panel's collapse state so bars are positioned correctly.
   const taskRowMap = useMemo(
-    () => buildTaskRowMap(displayRows.tasks, phases),
-    [displayRows.tasks, phases],
+    () => buildTaskRowMap(displayRows.tasks, phases, collapsedPhaseIds),
+    [displayRows.tasks, phases, collapsedPhaseIds],
   )
 
-  // Total visual rows = phase headers + task rows + empty padding rows
-  const phaseHeaderCount = useMemo(() => {
-    let count = phases.length
-    if (displayRows.tasks.some((t) => t.phase_id === null)) count++
-    return count
-  }, [phases, displayRows.tasks])
+  // Total visual rows = phase headers + visible task rows + empty padding rows
+  // Collapsed phases contribute only their header row (tasks are hidden).
+  const { phaseHeaderCount, visibleTaskCount } = useMemo(() => {
+    let headerCount = phases.length
+    const hasUnassigned = displayRows.tasks.some((t) => t.phase_id === null)
+    if (hasUnassigned) headerCount++
 
-  const totalRows = displayRows.tasks.length + displayRows.emptyCount + phaseHeaderCount
+    // Count tasks that belong to non-collapsed phases
+    let visibleCount = 0
+    for (const task of displayRows.tasks) {
+      const phaseId = task.phase_id ?? '__unassigned__'
+      if (!collapsedPhaseIds.has(phaseId)) visibleCount++
+    }
+    return { phaseHeaderCount: headerCount, visibleTaskCount: visibleCount }
+  }, [phases, displayRows.tasks, collapsedPhaseIds])
+
+  // emptyCount is recalculated based on visible task rows (collapsed tasks are hidden).
+  const adjustedEmptyCount = Math.max(0, MIN_ROWS - visibleTaskCount)
+  const totalRows = visibleTaskCount + adjustedEmptyCount + phaseHeaderCount
   const totalHeight = totalRows * ROW_HEIGHT
 
   const ZOOM_LEVELS: ZoomLevel[] = ['day', 'week', 'month']
