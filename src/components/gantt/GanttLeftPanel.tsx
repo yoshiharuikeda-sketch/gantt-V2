@@ -3120,20 +3120,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           onCopy={() => {
             closeContextMenu()
             copyRow(contextMenu.taskId)
-            // Also set row-level clipboard so paste-above/below options appear
-            const rowsToClip = [...selectedRowIds].includes(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
           }}
           onCut={() => {
             closeContextMenu()
             cutRow(contextMenu.taskId)
-            // Also set row-level clipboard so paste-above/below options appear
-            const rowsToClip = [...selectedRowIds].includes(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
           }}
           onPaste={() => {
             closeContextMenu()
