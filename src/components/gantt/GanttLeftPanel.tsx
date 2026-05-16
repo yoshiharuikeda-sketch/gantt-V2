@@ -344,11 +344,11 @@ function TaskRow({
       ? 'bg-white'
       : 'bg-slate-50'
 
-  // Marching-ants class for clipboard rows
+  // Clipboard highlight class for clipboard rows
   const clipboardClass = isInRowClipboard
     ? rowClipboardMode === 'cut'
-      ? 'marching-ants-cut'
-      : 'marching-ants-copy'
+      ? 'row-clipboard-cut'
+      : 'row-clipboard-copy'
     : ''
 
   return (
@@ -1058,8 +1058,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setActiveCell(null)
     setEditValue('')
     committingRef.current = false
-    // Escape in edit mode should also clear the row-level clipboard immediately
-    setRowClipboard(null)
   }, [activeCell])
 
   // Navigate to adjacent cell on Tab/Enter
@@ -1232,12 +1230,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    // Plain click: single selection — clear cell selection so Cmd+C/X uses row mode
+    // Plain click: single selection
     setSelectedRowId(taskId)
     setSelectedRowIds(new Set([taskId]))
-    setSelectedCell(null)
-    setSelectionAnchor(null)
-    setSelectionHead(null)
     gridRef.current?.focus()
   }, [selectedRowId, displayedTaskIds])
 
@@ -2462,7 +2457,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // ─── 行レベルコピー / 切り取り: セル編集なし & 行選択あり → 優先 ────────────
     // セルクリック時は selectedRowIds がクリア (handleCellMouseDown) されるため
     // セル選択と行選択が同時に true になることはない
-    if (isMod && !selectedCell && selectedRowIds.size > 0) {
+    if (isMod && !activeCell && selectedRowIds.size > 0) {
       if (e.key === 'c') {
         e.preventDefault()
         const rowsToClip = tasks.filter((t) => selectedRowIds.has(t.id))
@@ -2827,11 +2822,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       case 'Escape': {
         e.preventDefault()
         setSelectedCell(null)
-        // Clear row-level clipboard immediately (belt-and-suspenders; also cleared above at 2499)
-        setRowClipboard(null)
-        // Clear stale row selection so a subsequent Ctrl+C won't trigger row-level copy
-        setSelectedRowId(null)
-        setSelectedRowIds(new Set())
         setSelectionAnchor(null)
         setSelectionHead(null)
         return
@@ -2881,21 +2871,23 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   return (
     <>
       <style>{`
-        @keyframes blink {
+        @keyframes rowBlink {
           0%, 100% { outline-color: transparent; }
-          50% { outline-color: currentColor; }
+          50% { outline-color: #6366f1; }
         }
-        .marching-ants-copy {
+        @keyframes rowBlinkCut {
+          0%, 100% { outline-color: transparent; }
+          50% { outline-color: #f59e0b; }
+        }
+        .row-clipboard-copy {
           outline: 2px solid #6366f1;
           outline-offset: -2px;
-          color: #6366f1;
-          animation: blink 1s step-start infinite;
+          animation: rowBlink 1s step-start infinite;
         }
-        .marching-ants-cut {
+        .row-clipboard-cut {
           outline: 2px solid #f59e0b;
           outline-offset: -2px;
-          color: #f59e0b;
-          animation: blink 1s step-start infinite;
+          animation: rowBlinkCut 1s step-start infinite;
           opacity: 0.7;
         }
       `}</style>
