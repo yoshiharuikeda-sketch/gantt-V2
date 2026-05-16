@@ -1058,6 +1058,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setActiveCell(null)
     setEditValue('')
     committingRef.current = false
+    // Escape in edit mode should also clear the row-level clipboard immediately
+    setRowClipboard(null)
   }, [activeCell])
 
   // Navigate to adjacent cell on Tab/Enter
@@ -2821,6 +2823,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       case 'Escape': {
         e.preventDefault()
         setSelectedCell(null)
+        // Clear row-level clipboard immediately (belt-and-suspenders; also cleared above at 2499)
+        setRowClipboard(null)
+        // Clear stale row selection so a subsequent Ctrl+C won't trigger row-level copy
+        setSelectedRowId(null)
+        setSelectedRowIds(new Set())
+        setSelectionAnchor(null)
+        setSelectionHead(null)
         return
       }
       case 'Delete':
