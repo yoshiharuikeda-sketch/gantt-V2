@@ -2457,27 +2457,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     const isMod = e.ctrlKey || e.metaKey
 
-    // ─── セル範囲コピー / 切り取り / 貼り付け ───────────────────────────────
-    if (isMod && (selectedCell || selectionRange)) {
-      if (e.key === 'c') {
-        e.preventDefault()
-        void handleCellCopy()
-        return
-      }
-      if (e.key === 'x') {
-        e.preventDefault()
-        void handleCellCut()
-        return
-      }
-      if (e.key === 'v') {
-        e.preventDefault()
-        void handleCellPaste()
-        return
-      }
-    }
-
-    // ─── 行レベルコピー / 切り取り (selectedRowIds が活性 & セル選択なし) ──────
-    if (isMod && !selectedCell && !selectionRange && selectedRowIds.size > 0) {
+    // ─── 行レベルコピー / 切り取り: セル編集なし & 行選択あり → 優先 ────────────
+    // セルクリック時は selectedRowIds がクリア (handleCellMouseDown) されるため
+    // セル選択と行選択が同時に true になることはない
+    if (isMod && !selectedCell && selectedRowIds.size > 0) {
       if (e.key === 'c') {
         e.preventDefault()
         const rowsToClip = tasks.filter((t) => selectedRowIds.has(t.id))
@@ -2493,6 +2476,25 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         if (rowsToClip.length > 0) {
           setRowClipboard({ rows: rowsToClip as TaskWithBaseline[], mode: 'cut' })
         }
+        return
+      }
+    }
+
+    // ─── セル範囲コピー / 切り取り / 貼り付け ───────────────────────────────
+    if (isMod && (selectedCell || selectionRange)) {
+      if (e.key === 'c') {
+        e.preventDefault()
+        void handleCellCopy()
+        return
+      }
+      if (e.key === 'x') {
+        e.preventDefault()
+        void handleCellCut()
+        return
+      }
+      if (e.key === 'v') {
+        e.preventDefault()
+        void handleCellPaste()
         return
       }
     }
