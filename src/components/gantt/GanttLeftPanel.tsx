@@ -289,6 +289,7 @@ interface TaskRowProps {
   wrapText: boolean
   isInRowClipboard: boolean
   rowClipboardMode: 'copy' | 'cut' | null
+  cellCutCols: Set<GanttColKey> | null
   onEditValueChange: (v: string) => void
   onCellClick: (task: TaskWithBaseline, col: GanttColKey) => void
   onCellDoubleClick: (task: TaskWithBaseline, col: GanttColKey) => void
@@ -320,6 +321,7 @@ function TaskRow({
   wrapText,
   isInRowClipboard,
   rowClipboardMode,
+  cellCutCols,
   onEditValueChange,
   onCellClick,
   onCellDoubleClick,
@@ -449,7 +451,10 @@ function TaskRow({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className={`text-xs text-slate-700 w-full ${wrapText ? 'whitespace-normal break-words' : 'truncate'}`}>
+              <span
+                className={`text-xs w-full ${wrapText ? 'whitespace-normal break-words' : 'truncate'}`}
+                style={{ color: cellCutCols?.has(col) ? '#94a3b8' : undefined }}
+              >
                 {getDisplayValue(task, col)}
               </span>
             )}
@@ -738,6 +743,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     rows: TaskWithBaseline[]
     mode: 'copy' | 'cut'
   } | null>(null)
+
+  // Cell-level deferred cut: source cells are faded until paste completes
+  const [cellCutRect, setCellCutRect] = useState<{ rowIds: string[]; cols: GanttColKey[] } | null>(null)
 
   // Context menu for task rows
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; taskId: string } | null>(null)
@@ -2006,52 +2014,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const rect = resolveSelectionRect()
     if (!rect || !permissions?.canEdit) return
     await copyCellsToClipboard(rect)
-
-    // Clear editable cells in the selection (name is not cleared on cut)
-    // Record each cleared cell in the undo stack using the same rules as handleCellDelete
-    const patches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
-    for (const rowId of rect.rowIds) {
-      const task = tasks.find((t) => t.id === rowId)
-      if (!task || !canEditTask(task)) continue
-      const payload: Record<string, string | number | null> = {}
-      for (const col of rect.cols) {
-        if (col === 'name') continue // name is not cleared on cut
-        const defaultVal = getDefaultRawValue(col)
-        if (col === 'progress') {
-          pushCommand({ taskId: task.id, field: 'progress', before: task.progress, after: 0 })
-          payload[col] = parseInt(defaultVal, 10)
-        } else if (col === 'start_date') {
-          pushCommand({ taskId: task.id, field: 'start_date', before: task.start_date, after: null })
-          payload[col] = null
-        } else if (col === 'end_date') {
-          pushCommand({ taskId: task.id, field: 'end_date', before: task.end_date, after: null })
-          payload[col] = null
-        } else {
-          payload[col] = defaultVal || null
-        }
-      }
-      if (Object.keys(payload).length > 0) patches.push({ task, payload })
-    }
-
-    for (const { task, payload } of patches) {
-      upsertTask({ ...task, ...payload } as Task)
-      try {
-        const res = await fetch('/api/tasks', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: task.id, version: task.version, ...payload }),
-        })
-        if (res.ok) {
-          const json = await res.json() as { data: Task }
-          upsertTask(json.data)
-        } else {
-          upsertTask(task as Task)
-        }
-      } catch {
-        upsertTask(task as Task)
-      }
-    }
-  }, [resolveSelectionRect, copyCellsToClipboard, tasks, canEditTask, permissions, upsertTask, pushCommand])
+    // Deferred cut: mark source cells as pending (faded) — actual clearing happens on paste
+    setCellCutRect({ rowIds: rect.rowIds, cols: rect.cols })
+  }, [resolveSelectionRect, copyCellsToClipboard, permissions])
 
   const handleCellPaste = useCallback(async () => {
     if (!permissions?.canEdit) return
@@ -2154,6 +2119,53 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         upsertTask(task as Task)
       }
     }
+
+    // Deferred cut: clear the source cells now that paste has succeeded
+    if (cellCutRect) {
+      const cutPatches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
+      for (const rowId of cellCutRect.rowIds) {
+        const task = tasks.find((t) => t.id === rowId)
+        if (!task || !canEditTask(task)) continue
+        const payload: Record<string, string | number | null> = {}
+        for (const col of cellCutRect.cols) {
+          if (col === 'name') continue // name is not cleared on cut
+          const defaultVal = getDefaultRawValue(col)
+          if (col === 'progress') {
+            pushCommand({ taskId: task.id, field: 'progress', before: task.progress, after: 0 })
+            payload[col] = parseInt(defaultVal, 10)
+          } else if (col === 'start_date') {
+            pushCommand({ taskId: task.id, field: 'start_date', before: task.start_date, after: null })
+            payload[col] = null
+          } else if (col === 'end_date') {
+            pushCommand({ taskId: task.id, field: 'end_date', before: task.end_date, after: null })
+            payload[col] = null
+          } else {
+            payload[col] = defaultVal || null
+          }
+        }
+        if (Object.keys(payload).length > 0) cutPatches.push({ task, payload })
+      }
+
+      for (const { task, payload } of cutPatches) {
+        upsertTask({ ...task, ...payload } as Task)
+        try {
+          const res = await fetch('/api/tasks', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: task.id, version: task.version, ...payload }),
+          })
+          if (res.ok) {
+            const json = await res.json() as { data: Task }
+            upsertTask(json.data)
+          } else {
+            upsertTask(task as Task)
+          }
+        } catch {
+          upsertTask(task as Task)
+        }
+      }
+      setCellCutRect(null)
+    }
   }, [
     permissions,
     selectedCell,
@@ -2163,6 +2175,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     canEditTask,
     upsertTask,
     pushCommand,
+    cellCutRect,
+    setCellCutRect,
   ])
 
   // Clear the selected cell range (Delete/Backspace key, no modifier)
@@ -2395,6 +2409,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // ─── Escape: 行クリップボードをクリア（セル選択クリアは後続ロジックで行う）──
     if (e.key === 'Escape') {
       setRowClipboard(null)
+      setCellCutRect(null)
       // Fall through so the normal Escape path (clear selectedCell) also runs
     }
 
@@ -2762,6 +2777,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     deleteRow,
     doPasteIntoEmpty,
     rowClipboard,
+    cellCutRect,
   ])
 
   return (
@@ -2894,6 +2910,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             }
 
             const { task, visualIndex, wbsNumber } = row
+            const cutCols = cellCutRect && cellCutRect.rowIds.includes(task.id)
+              ? new Set(cellCutRect.cols)
+              : null
             return (
               <TaskRow
                 key={task.id}
@@ -2911,6 +2930,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 wrapText={wrapText}
                 isInRowClipboard={rowClipboard !== null && rowClipboard.rows.some((r) => r.id === task.id)}
                 rowClipboardMode={rowClipboard?.mode ?? null}
+                cellCutCols={cutCols}
                 onEditValueChange={setEditValue}
                 onCellClick={selectCell}
                 onCellDoubleClick={openCell}
@@ -3010,15 +3030,25 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           }}
           onCopy={() => {
             closeContextMenu()
-            void handleCellCopy()
+            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
           }}
           onCut={() => {
             closeContextMenu()
-            void handleCellCut()
+            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
           }}
           onPaste={() => {
             closeContextMenu()
-            void handleCellPaste()
+            if (rowClipboard) {
+              void pasteRows(contextMenu.taskId, 'below')
+            } else {
+              void handleCellPaste()
+            }
           }}
           onPasteAbove={() => {
             closeContextMenu()
