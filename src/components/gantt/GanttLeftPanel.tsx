@@ -90,9 +90,6 @@ type CellId = { taskId: string; col: GanttColKey }
 // When activeCell was opened by a printable key, we skip full-text-select on focus
 type ActiveCell = CellId & { fromKey: boolean }
 
-// Data held in the clipboard for copy/paste (row-level context menu)
-type ClipboardData = Pick<Task, 'name' | 'status' | 'start_date' | 'end_date' | 'progress' | 'phase_id'>
-
 interface GanttLeftPanelProps {
   tasks: TaskWithBaseline[]
   rowHeight: number
@@ -566,14 +563,12 @@ interface ContextMenuProps {
   x: number
   y: number
   canEdit: boolean
-  hasClipboard: boolean
   hasRowClipboard: boolean
   rowClipboardMode: 'copy' | 'cut' | null
   onInsertAbove: () => void
   onInsertBelow: () => void
   onCopy: () => void
   onCut: () => void
-  onPaste: () => void
   onPasteAbove: () => void
   onPasteBelow: () => void
   onDelete: () => void
@@ -583,14 +578,12 @@ function ContextMenu({
   x,
   y,
   canEdit,
-  hasClipboard,
   hasRowClipboard,
   rowClipboardMode,
   onInsertAbove,
   onInsertBelow,
   onCopy,
   onCut,
-  onPaste,
   onPasteAbove,
   onPasteBelow,
   onDelete,
@@ -619,7 +612,6 @@ function ContextMenu({
     { label: '行を下に挿入', onClick: onInsertBelow, disabled: !canEdit },
     { label: 'コピー', shortcut: 'Ctrl+C', onClick: onCopy, disabled: !canEdit },
     { label: '切り取り', shortcut: 'Ctrl+X', onClick: onCut, disabled: !canEdit },
-    { label: '貼り付け', shortcut: 'Ctrl+V', onClick: onPaste, disabled: !canEdit || !hasClipboard },
     { label: '削除', shortcut: 'Delete', onClick: onDelete, disabled: !canEdit },
   )
 
@@ -738,16 +730,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   // Full set of selected row IDs for multi-select
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
 
-  // Clipboard for row-level copy/paste (context menu)
-  const [clipboard, setClipboard] = useState<ClipboardData | null>(null)
-  // Whether the clipboard came from a cut (so we delete source after paste)
-  const cutTaskIdRef = useRef<string | null>(null)
-  // Track whether the OS clipboard has cell-level TSV content written by this component.
-  // Used to enable the "貼り付け" item in the empty-row context menu.
-  const hasCellClipboardRef = useRef(false)
-
   // Row-level clipboard for Excel-like Ctrl+C/Ctrl+X row copy/cut
-  // Distinct from the cell-level `clipboard` above (which is for context-menu paste into same row).
   const [rowClipboard, setRowClipboard] = useState<{
     rows: TaskWithBaseline[]
     mode: 'copy' | 'cut'
@@ -1675,108 +1658,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     return () => document.removeEventListener('mouseup', onMouseUp)
   }, [])
 
-  // ─── Spreadsheet operations (row-level, used by context menu) ────────────────
-
-  const copyRow = useCallback((taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId)
-    if (!task) return
-    cutTaskIdRef.current = null
-    setClipboard({
-      name: task.name,
-      status: task.status,
-      start_date: task.start_date,
-      end_date: task.end_date,
-      progress: task.progress,
-      phase_id: task.phase_id,
-    })
-  }, [tasks])
-
-  const cutRow = useCallback((taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId)
-    if (!task) return
-    cutTaskIdRef.current = taskId
-    setClipboard({
-      name: task.name,
-      status: task.status,
-      start_date: task.start_date,
-      end_date: task.end_date,
-      progress: task.progress,
-      phase_id: task.phase_id,
-    })
-  }, [tasks])
-
-  const pasteRow = useCallback(async (afterTaskId: string) => {
-    if (!clipboard || !currentProject) return
-
-    // Create at a temporary display_order; reorder call below sets the real position
-    const tempDisplayOrder = tasks.length
-
-    try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: currentProject.id,
-          phase_id: clipboard.phase_id,
-          name: `${clipboard.name} のコピー`,
-          status: clipboard.status,
-          start_date: clipboard.start_date,
-          end_date: clipboard.end_date,
-          progress: clipboard.progress,
-          display_order: tempDisplayOrder,
-          dependencies: [],
-        }),
-      })
-
-      if (!res.ok) {
-        const json = await res.json() as { error?: string }
-        console.error('Failed to paste task:', json.error)
-        return
-      }
-
-      const json = await res.json() as { data: Task }
-      const newTask = json.data
-
-      // Splice the new task directly after afterTaskId and reorder all tasks so there are no gaps
-      const afterIdx = tasks.findIndex((t) => t.id === afterTaskId)
-      const insertAt = afterIdx >= 0 ? afterIdx + 1 : tasks.length
-      const orderedIds = tasks.map((t) => t.id)
-      orderedIds.splice(insertAt, 0, newTask.id)
-      const items = orderedIds.map((id, index) => ({ id, display_order: index }))
-
-      try {
-        await fetch('/api/tasks/reorder', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectId: currentProject.id, items }),
-        })
-      } catch (reorderErr) {
-        console.error('Failed to reorder after paste:', reorderErr)
-      }
-
-      upsertTask({ ...newTask, display_order: insertAt })
-      reorderTasks(orderedIds)
-
-      // If this was a cut, delete the source task after pasting
-      if (cutTaskIdRef.current) {
-        const sourceId = cutTaskIdRef.current
-        cutTaskIdRef.current = null
-        setClipboard(null)
-        try {
-          const delRes = await fetch(`/api/tasks?id=${encodeURIComponent(sourceId)}`, { method: 'DELETE' })
-          if (delRes.ok) {
-            removeTask(sourceId)
-          }
-        } catch (err) {
-          console.error('Failed to delete cut task:', err)
-        }
-      }
-    } catch (err) {
-      console.error('Failed to paste task:', err)
-    }
-  }, [clipboard, currentProject, tasks, upsertTask, removeTask, reorderTasks])
-
-  // ─── Row-level clipboard paste (Ctrl+C/X rows then right-click → insert above/below) ────
+  // ═══════════════════════════════════════════════════════
+  // SYSTEM B: Row-level copy / cut / paste
+  // Operates on selectedRowIds (WBS-click or row-click selected rows).
+  // Uses React state: rowClipboard.
+  // ═══════════════════════════════════════════════════════
 
   const pasteRows = useCallback(async (targetTaskId: string, position: 'above' | 'below') => {
     if (!rowClipboard || !currentProject) return
@@ -2047,7 +1933,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setTimeout(() => openCell(task as TaskWithBaseline, 'name'), 0)
   }, [focusInsertedTaskId, tasks, openCell])
 
-  // ─── Cell-level copy / cut / paste (TSV, Cmd+C/X/V) ─────────────────────────
+  // ═══════════════════════════════════════════════════════
+  // SYSTEM A: Cell-level copy / cut / paste
+  // Operates on selectionRange (drag-selected cells).
+  // Uses OS clipboard (navigator.clipboard).
+  // ═══════════════════════════════════════════════════════
 
   // Resolve the rectangular selection as ordered (rowIds × cols).
   // Reads anchor/head/range from refs so the closure never goes stale between renders
@@ -2090,7 +1980,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const text = lines.join('\n')
     try {
       await navigator.clipboard.writeText(text)
-      hasCellClipboardRef.current = true
     } catch {
       // navigator.clipboard is unavailable (non-secure context) — use execCommand fallback
       const ta = document.createElement('textarea')
@@ -2101,7 +1990,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       ta.select()
       document.execCommand('copy')
       document.body.removeChild(ta)
-      hasCellClipboardRef.current = true
     }
   }, [])
 
@@ -2196,14 +2084,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    const pasteRows = text.split('\n').map((line) => line.split('\t'))
+    const cellPasteRows = text.split('\n').map((line) => line.split('\t'))
     const originRowIdx = displayedTaskIds.indexOf(originTaskId)
     const originColIdx = editableCols.indexOf(originCol)
     if (originRowIdx === -1 || originColIdx === -1) return
 
     const patches: { task: TaskWithBaseline; beforeValues: Record<string, string | number | null>; payload: Record<string, string | number | null> }[] = []
 
-    for (let r = 0; r < pasteRows.length; r++) {
+    for (let r = 0; r < cellPasteRows.length; r++) {
       const targetRowIdx = originRowIdx + r
       if (targetRowIdx >= displayedTaskIds.length) break
       const targetTaskId = displayedTaskIds[targetRowIdx]
@@ -2212,12 +2100,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
       const payload: Record<string, string | number | null> = {}
       const beforeValues: Record<string, string | number | null> = {}
-      for (let c = 0; c < pasteRows[r].length; c++) {
+      for (let c = 0; c < cellPasteRows[r].length; c++) {
         const targetColIdx = originColIdx + c
         if (targetColIdx >= editableCols.length) break
         const col = editableCols[targetColIdx]
         if (NON_EDITABLE_COLS.has(col)) continue
-        const rawVal = pasteRows[r][c] ?? ''
+        const rawVal = cellPasteRows[r][c] ?? ''
         if (col === 'name') {
           // Skip empty values for name (RBAC guard + required field)
           if (!rawVal.trim()) continue
@@ -2454,9 +2342,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     const isMod = e.ctrlKey || e.metaKey
 
-    // ─── 行レベルコピー / 切り取り: セル編集なし & 行選択あり → 優先 ────────────
-    // セルクリック時は selectedRowIds がクリア (handleCellMouseDown) されるため
-    // セル選択と行選択が同時に true になることはない
+    // System B: Row-level (checked first — selectedRowIds cleared by cell click so no overlap)
     if (isMod && !activeCell && selectedRowIds.size > 0) {
       if (e.key === 'c') {
         e.preventDefault()
@@ -2477,7 +2363,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
     }
 
-    // ─── セル範囲コピー / 切り取り / 貼り付け ───────────────────────────────
+    // System A: Cell-level
     if (isMod && (selectedCell || selectionRange)) {
       if (e.key === 'c') {
         e.preventDefault()
@@ -3102,7 +2988,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           x={contextMenu.x}
           y={contextMenu.y}
           canEdit={permissions?.canEdit === true}
-          hasClipboard={clipboard !== null}
           hasRowClipboard={rowClipboard !== null}
           rowClipboardMode={rowClipboard?.mode ?? null}
           onInsertAbove={() => {
@@ -3115,15 +3000,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           }}
           onCopy={() => {
             closeContextMenu()
-            copyRow(contextMenu.taskId)
+            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
           }}
           onCut={() => {
             closeContextMenu()
-            cutRow(contextMenu.taskId)
-          }}
-          onPaste={() => {
-            closeContextMenu()
-            void pasteRow(contextMenu.taskId)
+            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
           }}
           onPasteAbove={() => {
             closeContextMenu()
@@ -3183,22 +3070,15 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           </button>
           {(() => {
             const rowIndex = emptyRowContextMenu.rowIndex
-            const canPaste = hasCellClipboardRef.current || clipboard !== null
             return (
               <button
-                disabled={!canPaste}
                 onClick={() => {
                   closeEmptyRowContextMenu()
                   navigator.clipboard.readText().then((t) => void doPasteIntoEmpty(t, rowIndex)).catch(() => {
                     // Cannot read OS clipboard; silently ignore
                   })
                 }}
-                className={[
-                  'w-full flex items-center justify-between px-3 py-1.5 text-xs text-left',
-                  canPaste
-                    ? 'text-slate-700 hover:bg-indigo-50 cursor-pointer'
-                    : 'text-slate-300 cursor-not-allowed',
-                ].join(' ')}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
               >
                 <span>貼り付け</span>
                 <span className="ml-4 text-slate-400">Ctrl+V</span>
