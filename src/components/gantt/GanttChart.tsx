@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { Undo2, Redo2 } from 'lucide-react'
@@ -89,6 +89,7 @@ export function GanttChart() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const leftScrollRef = useRef<HTMLDivElement>(null)
+  const leftPanelRef = useRef<HTMLDivElement>(null)
 
   // Panel resize state – persisted to localStorage
   const [leftWidth, setLeftWidth] = useState<number>(() => {
@@ -102,6 +103,28 @@ export function GanttChart() {
     return parsed
   })
   const isDraggingPanel = useRef(false)
+
+  // `measuredLeftWidth` tracks the actual rendered width of the left panel so that
+  // GanttLeftPanel receives the correct `containerWidth` from the very first render,
+  // avoiding column misalignment before any drag interaction.
+  const [measuredLeftWidth, setMeasuredLeftWidth] = useState<number>(leftWidth)
+
+  useLayoutEffect(() => {
+    const el = leftPanelRef.current
+    if (!el) return
+
+    // Set the initial measured width immediately from the DOM
+    setMeasuredLeftWidth(el.getBoundingClientRect().width)
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (entry) {
+        setMeasuredLeftWidth(entry.contentRect.width)
+      }
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
 
@@ -343,7 +366,11 @@ export function GanttChart() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel */}
         <div
-          ref={leftScrollRef}
+          ref={(node) => {
+            // Attach both the scroll ref and the measurement ref to the same element
+            ;(leftScrollRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+            ;(leftPanelRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+          }}
           className="flex-shrink-0 bg-white z-10 overflow-y-auto overflow-x-hidden"
           style={{ width: leftWidth, scrollbarWidth: 'none' }}
         >
@@ -355,7 +382,7 @@ export function GanttChart() {
             pushCommand={pushCommand}
             onEditingChange={(editing) => { activeCellRef.current = editing }}
             onSelectedRowChange={(id) => setSelectedTaskIdForConversion(id)}
-            containerWidth={leftWidth}
+            containerWidth={measuredLeftWidth}
           />
         </div>
 
