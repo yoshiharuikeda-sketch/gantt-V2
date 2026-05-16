@@ -2905,10 +2905,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
               <div
                 key={col}
                 className={[
-                  'flex-shrink-0 relative flex items-center px-2 border-r border-slate-200 text-xs font-medium text-slate-500 select-none overflow-hidden',
+                  'flex-shrink-0 relative flex items-center border-r border-slate-200 text-xs font-medium text-slate-500 select-none overflow-hidden',
                   isEditable ? 'cursor-pointer hover:bg-indigo-100' : '',
                 ].join(' ')}
-                style={{ width: effectiveColWidths[col], height: '100%' }}
+                style={{ width: effectiveColWidths[col], height: '100%', paddingLeft: 8, paddingRight: 8 }}
                 onClick={() => {
                   if (!isEditable || tasks.length === 0) return
                   // Select entire column: anchor = first task row, head = last task row
