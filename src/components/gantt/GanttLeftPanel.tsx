@@ -2496,7 +2496,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
 
     // ─── Escape: 行クリップボードをクリア（セル選択クリアは後続ロジックで行う）──
-    if (e.key === 'Escape' && rowClipboard) {
+    if (e.key === 'Escape') {
       setRowClipboard(null)
       // Fall through so the normal Escape path (clear selectedCell) also runs
     }
@@ -2868,32 +2868,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   return (
     <>
       <style>{`
-        @keyframes marchingAnts {
-          0%   { background-position: 0 0, 0 0, 100% 0, 0 100%; }
-          100% { background-position: 16px 0, 0 -16px, 100% 16px, 16px 100%; }
+        @keyframes blink {
+          0%, 100% { outline-color: transparent; }
+          50% { outline-color: currentColor; }
         }
         .marching-ants-copy {
-          background-image:
-            repeating-linear-gradient(90deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(180deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(90deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(180deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px);
-          background-size: 100% 2px, 2px 100%, 100% 2px, 2px 100%;
-          background-position: 0 0, 100% 0, 0 100%, 0 0;
-          background-repeat: no-repeat;
-          animation: marchingAnts 0.4s linear infinite;
+          outline: 2px solid #6366f1;
+          outline-offset: -2px;
+          color: #6366f1;
+          animation: blink 1s step-start infinite;
         }
         .marching-ants-cut {
-          background-image:
-            repeating-linear-gradient(90deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(180deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(90deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px),
-            repeating-linear-gradient(180deg, #6366f1 0, #6366f1 8px, transparent 8px, transparent 16px);
-          background-size: 100% 2px, 2px 100%, 100% 2px, 2px 100%;
-          background-position: 0 0, 100% 0, 0 100%, 0 0;
-          background-repeat: no-repeat;
-          animation: marchingAnts 0.4s linear infinite;
-          opacity: 0.55;
+          outline: 2px solid #f59e0b;
+          outline-offset: -2px;
+          color: #f59e0b;
+          animation: blink 1s step-start infinite;
+          opacity: 0.7;
         }
       `}</style>
       <div className="flex flex-col h-full overflow-hidden" style={{ width: totalWidth }}>
