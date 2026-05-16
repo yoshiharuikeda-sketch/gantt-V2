@@ -569,6 +569,7 @@ interface ContextMenuProps {
   onInsertBelow: () => void
   onCopy: () => void
   onCut: () => void
+  onPaste: () => void
   onPasteAbove: () => void
   onPasteBelow: () => void
   onDelete: () => void
@@ -584,6 +585,7 @@ function ContextMenu({
   onInsertBelow,
   onCopy,
   onCut,
+  onPaste,
   onPasteAbove,
   onPasteBelow,
   onDelete,
@@ -612,6 +614,7 @@ function ContextMenu({
     { label: '行を下に挿入', onClick: onInsertBelow, disabled: !canEdit },
     { label: 'コピー', shortcut: 'Ctrl+C', onClick: onCopy, disabled: !canEdit },
     { label: '切り取り', shortcut: 'Ctrl+X', onClick: onCut, disabled: !canEdit },
+    { label: '貼り付け', shortcut: 'Ctrl+V', onClick: onPaste, disabled: false },
     { label: '削除', shortcut: 'Delete', onClick: onDelete, disabled: !canEdit },
   )
 
@@ -2342,8 +2345,27 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     const isMod = e.ctrlKey || e.metaKey
 
-    // System B: Row-level (checked first — selectedRowIds cleared by cell click so no overlap)
-    if (isMod && !activeCell && selectedRowIds.size > 0) {
+    // System A first: Cell-level (more specific — requires cell/range selection)
+    if (isMod && (selectedCell || selectionRange)) {
+      if (e.key === 'c') {
+        e.preventDefault()
+        void handleCellCopy()
+        return
+      }
+      if (e.key === 'x') {
+        e.preventDefault()
+        void handleCellCut()
+        return
+      }
+      if (e.key === 'v') {
+        e.preventDefault()
+        void handleCellPaste()
+        return
+      }
+    }
+
+    // System B: Row-level (only when NO cell/range selection)
+    if (isMod && !selectedCell && !selectionRange && selectedRowIds.size > 0) {
       if (e.key === 'c') {
         e.preventDefault()
         const rowsToClip = tasks.filter((t) => selectedRowIds.has(t.id))
@@ -2363,23 +2385,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
     }
 
-    // System A: Cell-level
-    if (isMod && (selectedCell || selectionRange)) {
-      if (e.key === 'c') {
-        e.preventDefault()
-        void handleCellCopy()
-        return
-      }
-      if (e.key === 'x') {
-        e.preventDefault()
-        void handleCellCut()
-        return
-      }
-      if (e.key === 'v') {
-        e.preventDefault()
-        void handleCellPaste()
-        return
-      }
+    // Cmd+V fallback: paste even when no explicit cell/range selection
+    if (isMod && e.key === 'v') {
+      e.preventDefault()
+      void handleCellPaste()
+      return
     }
 
     // ─── Escape: 行クリップボードをクリア（セル選択クリアは後続ロジックで行う）──
@@ -3000,17 +3010,15 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           }}
           onCopy={() => {
             closeContextMenu()
-            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
+            void handleCellCopy()
           }}
           onCut={() => {
             closeContextMenu()
-            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
+            void handleCellCut()
+          }}
+          onPaste={() => {
+            closeContextMenu()
+            void handleCellPaste()
           }}
           onPasteAbove={() => {
             closeContextMenu()
