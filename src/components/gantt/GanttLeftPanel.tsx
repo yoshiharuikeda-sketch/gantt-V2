@@ -1232,11 +1232,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    // Plain click: single selection
+    // Plain click: single selection — clear cell selection so Cmd+C/X uses row mode
     setSelectedRowId(taskId)
     setSelectedRowIds(new Set([taskId]))
-    // Focus the grid so keyboard shortcuts (e.g. Cmd+Delete) work immediately
-    // after a plain row click, without requiring the user to click a cell first.
+    setSelectedCell(null)
+    setSelectionAnchor(null)
+    setSelectionHead(null)
     gridRef.current?.focus()
   }, [selectedRowId, displayedTaskIds])
 
@@ -1873,14 +1874,33 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
       reorderTasks(baseIds)
 
-      // PATCH phase_id for each moved task
-      const patchResults = await Promise.all(taskRows.map((srcTask) =>
-        fetch('/api/tasks', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: srcTask.id, version: srcTask.version, phase_id: targetPhaseId }),
-        })
-      ))
+      // PATCH phase_id only for tasks changing phase (same-phase moves only need reorder)
+      const tasksChangingPhase = taskRows.filter((t) => t.phase_id !== targetPhaseId)
+      if (tasksChangingPhase.length > 0) {
+        const patchResults = await Promise.all(tasksChangingPhase.map((srcTask) =>
+          fetch('/api/tasks', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: srcTask.id, version: srcTask.version, phase_id: targetPhaseId }),
+          })
+        ))
+
+        if (patchResults.some((r) => !r.ok)) {
+          for (const srcTask of taskRows) {
+            upsertTask(srcTask as Task)
+          }
+          reorderTasks(tasks.map((t) => t.id))
+          return
+        }
+
+        for (let i = 0; i < patchResults.length; i++) {
+          const r = patchResults[i]
+          if (r.ok) {
+            const json = await r.json() as { data: Task }
+            upsertTask(json.data)
+          }
+        }
+      }
 
       // Persist new order
       try {
@@ -1891,24 +1911,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         })
       } catch (err) {
         console.error('Failed to reorder after cut-paste:', err)
-      }
-
-      // Revert on patch failure
-      if (patchResults.some((r) => !r.ok)) {
-        for (const srcTask of taskRows) {
-          upsertTask(srcTask as Task)
-        }
-        reorderTasks(tasks.map((t) => t.id))
-        return
-      }
-
-      // Update local store with server-returned tasks
-      for (let i = 0; i < patchResults.length; i++) {
-        const r = patchResults[i]
-        if (r.ok) {
-          const json = await r.json() as { data: Task }
-          upsertTask(json.data)
-        }
       }
 
       // Clear row clipboard after cut-paste
