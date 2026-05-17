@@ -2121,10 +2121,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
 
     // Deferred cut: clear the source cells now that paste has succeeded
+    // Use tasksRef.current so we always get the latest version numbers
+    // (paste PATCHes above may have incremented versions of overlapping tasks)
     if (cellCutRect) {
       const cutPatches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
       for (const rowId of cellCutRect.rowIds) {
-        const task = tasks.find((t) => t.id === rowId)
+        const task = tasksRef.current.find((t) => t.id === rowId)
         if (!task || !canEditTask(task)) continue
         const payload: Record<string, string | number | null> = {}
         for (const col of cellCutRect.cols) {
@@ -2797,10 +2799,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           animation: rowBlink 1s step-start infinite;
         }
         .row-clipboard-cut {
-          outline: 2px solid #f59e0b;
-          outline-offset: -2px;
-          animation: rowBlinkCut 1s step-start infinite;
-          opacity: 0.7;
+          opacity: 0.45;
         }
       `}</style>
       <div className="flex flex-col h-full overflow-hidden" style={{ width: totalWidth }}>
@@ -3043,9 +3042,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
           }}
           onPaste={() => {
+            const taskId = contextMenu.taskId
             closeContextMenu()
             if (rowClipboard) {
-              void pasteRows(contextMenu.taskId, 'below')
+              void pasteRows(taskId, 'below')
             } else {
               void handleCellPaste()
             }
