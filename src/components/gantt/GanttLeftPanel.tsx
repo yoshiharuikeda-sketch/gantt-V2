@@ -3029,17 +3029,29 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           }}
           onCopy={() => {
             closeContextMenu()
-            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
+            // System A: cell selection active → copy cells to OS clipboard
+            // System B: row selection → copy rows to rowClipboard (blink highlight)
+            if (selectionRange || selectedCell) {
+              void handleCellCopy()
+            } else {
+              const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+                ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+                : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+              if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'copy' })
+            }
           }}
           onCut={() => {
             closeContextMenu()
-            const rowsToClip = selectedRowIds.has(contextMenu.taskId)
-              ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
-              : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
-            if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
+            // System A: cell selection active → deferred cell cut (faded text)
+            // System B: row selection → cut rows to rowClipboard (dim)
+            if (selectionRange || selectedCell) {
+              void handleCellCut()
+            } else {
+              const rowsToClip = selectedRowIds.has(contextMenu.taskId)
+                ? tasks.filter((t) => selectedRowIds.has(t.id)) as TaskWithBaseline[]
+                : tasks.filter((t) => t.id === contextMenu.taskId) as TaskWithBaseline[]
+              if (rowsToClip.length > 0) setRowClipboard({ rows: rowsToClip, mode: 'cut' })
+            }
           }}
           onPaste={() => {
             const taskId = contextMenu.taskId
