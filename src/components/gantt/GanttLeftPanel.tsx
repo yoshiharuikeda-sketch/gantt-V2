@@ -745,6 +745,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
   // Cell-level deferred cut: source cells are faded until paste completes
   const [cellCutRect, setCellCutRect] = useState<{ rowIds: string[]; cols: GanttColKey[] } | null>(null)
+  // Ref mirrors cellCutRect so async callbacks (handleCellPaste) always read the
+  // latest value without relying on a potentially-stale useCallback closure.
+  const cellCutRectRef = useRef<{ rowIds: string[]; cols: GanttColKey[] } | null>(null)
 
   // Context menu for task rows
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; taskId: string } | null>(null)
@@ -1638,6 +1641,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   activeCellRef.current = activeCell
   editValueRef.current = editValue
   tasksRef.current = tasks
+  cellCutRectRef.current = cellCutRect
   // Keep delete-related state in refs so the document keydown handler always
   // reads the latest values without going stale between renders
   selectedRowIdsRef.current = selectedRowIds
@@ -2120,12 +2124,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
 
     // Deferred cut: clear the source cells now that paste has succeeded.
-    // Read directly from Zustand store (getState) so we always get the version
-    // incremented by the paste PATCHes above — tasksRef.current and the closure
-    // are both stale until the next React render.
-    if (cellCutRect) {
+    // Read cellCutRect from the ref (not the closure) so we always see the
+    // value set by the most-recent handleCellCut, regardless of whether
+    // this useCallback was recreated after that state update.
+    // Also read the latest task versions directly from Zustand (getState) so
+    // we use the version incremented by the paste PATCHes above —
+    // tasksRef.current and the closure are both stale until the next React render.
+    const liveCutRect = cellCutRectRef.current
+    if (liveCutRect) {
       const cutPatches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
-      for (const rowId of cellCutRect.rowIds) {
+      for (const rowId of liveCutRect.rowIds) {
         // tasksRef may be stale; get the latest version from the live store
         const liveVersion = useTaskStore.getState().tasks.find((t) => t.id === rowId)?.version
         const baseTask = tasksRef.current.find((t) => t.id === rowId)
@@ -2134,7 +2142,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           ? { ...baseTask, version: liveVersion }
           : baseTask
         const payload: Record<string, string | number | null> = {}
-        for (const col of cellCutRect.cols) {
+        for (const col of liveCutRect.cols) {
           const defaultVal = getDefaultRawValue(col)
           if (col === 'name') {
             pushCommand({ taskId: task.id, field: 'name', before: task.name, after: '' })
@@ -2167,13 +2175,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             const json = await res.json() as { data: Task }
             upsertTask(json.data)
           } else {
+            const errJson = await res.json().catch(() => ({})) as { error?: string }
+            console.error('[cut-clear] PATCH failed:', res.status, errJson.error, { taskId: task.id, version: task.version, payload })
             upsertTask(task as Task)
           }
-        } catch {
+        } catch (err) {
+          console.error('[cut-clear] PATCH threw:', err, { taskId: task.id, version: task.version, payload })
           upsertTask(task as Task)
         }
       }
       setCellCutRect(null)
+      cellCutRectRef.current = null
     }
   }, [
     permissions,
@@ -2184,8 +2196,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     canEditTask,
     upsertTask,
     pushCommand,
-    cellCutRect,
-    setCellCutRect,
   ])
 
   // Clear the selected cell range (Delete/Backspace key, no modifier)
