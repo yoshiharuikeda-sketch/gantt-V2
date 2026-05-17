@@ -698,7 +698,6 @@ function getDefaultRawValue(col: GanttColKey): string {
     case 'progress':   return '0'
     case 'start_date': return ''
     case 'end_date':   return ''
-    // name is intentionally not cleared; callers should skip name for cut-clear
     default:           return ''
   }
 }
@@ -2136,9 +2135,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           : baseTask
         const payload: Record<string, string | number | null> = {}
         for (const col of cellCutRect.cols) {
-          if (col === 'name') continue // name is not cleared on cut
           const defaultVal = getDefaultRawValue(col)
-          if (col === 'progress') {
+          if (col === 'name') {
+            pushCommand({ taskId: task.id, field: 'name', before: task.name, after: '' })
+            payload[col] = ''
+          } else if (col === 'progress') {
             pushCommand({ taskId: task.id, field: 'progress', before: task.progress, after: 0 })
             payload[col] = parseInt(defaultVal, 10)
           } else if (col === 'start_date') {
