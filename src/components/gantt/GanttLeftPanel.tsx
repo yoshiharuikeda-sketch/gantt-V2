@@ -2120,14 +2120,20 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
     }
 
-    // Deferred cut: clear the source cells now that paste has succeeded
-    // Use tasksRef.current so we always get the latest version numbers
-    // (paste PATCHes above may have incremented versions of overlapping tasks)
+    // Deferred cut: clear the source cells now that paste has succeeded.
+    // Read directly from Zustand store (getState) so we always get the version
+    // incremented by the paste PATCHes above — tasksRef.current and the closure
+    // are both stale until the next React render.
     if (cellCutRect) {
       const cutPatches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
       for (const rowId of cellCutRect.rowIds) {
-        const task = tasksRef.current.find((t) => t.id === rowId)
-        if (!task || !canEditTask(task)) continue
+        // tasksRef may be stale; get the latest version from the live store
+        const liveVersion = useTaskStore.getState().tasks.find((t) => t.id === rowId)?.version
+        const baseTask = tasksRef.current.find((t) => t.id === rowId)
+        if (!baseTask || !canEditTask(baseTask)) continue
+        const task: TaskWithBaseline = liveVersion !== undefined
+          ? { ...baseTask, version: liveVersion }
+          : baseTask
         const payload: Record<string, string | number | null> = {}
         for (const col of cellCutRect.cols) {
           if (col === 'name') continue // name is not cleared on cut
