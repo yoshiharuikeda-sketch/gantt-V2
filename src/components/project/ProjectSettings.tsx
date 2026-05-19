@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
@@ -82,6 +82,11 @@ export function ProjectSettings({
   const [internalInviting, setInternalInviting] = useState(false)
   const [internalError, setInternalError] = useState<string | null>(null)
   const [internalSuccess, setInternalSuccess] = useState<string | null>(null)
+
+  // コンタクトサジェスト
+  const [contactSuggestions, setContactSuggestions] = useState<{ name: string; email: string; department: string }[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ベンダー招待フォーム
   const [vendorEmail, setVendorEmail] = useState('')
@@ -534,13 +539,62 @@ export function ProjectSettings({
                 <div className="border rounded-lg p-4 space-y-3">
                   <h3 className="font-medium text-sm">社内メンバー招待</h3>
                   <div className="flex gap-2 items-start">
-                    <div className="flex-1">
+                    <div className="flex-1 relative">
                       <Input
-                        type="email"
-                        placeholder="メールアドレス"
+                        type="text"
+                        placeholder="名前またはメールアドレス"
                         value={internalEmail}
-                        onChange={(e) => setInternalEmail(e.target.value)}
+                        onChange={(e) => {
+                          const value = e.target.value
+                          setInternalEmail(value)
+                          if (debounceRef.current) clearTimeout(debounceRef.current)
+                          if (value.length >= 2) {
+                            debounceRef.current = setTimeout(async () => {
+                              try {
+                                const res = await fetch(`/api/contacts?q=${encodeURIComponent(value)}`)
+                                if (res.ok) {
+                                  const data = await res.json()
+                                  setContactSuggestions(data)
+                                  setShowSuggestions(true)
+                                }
+                              } catch {
+                                // ignore fetch errors
+                              }
+                            }, 300)
+                          } else {
+                            setContactSuggestions([])
+                            setShowSuggestions(false)
+                          }
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => setShowSuggestions(false), 150)
+                        }}
                       />
+                      {showSuggestions && contactSuggestions.length > 0 && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border rounded-md shadow-md max-h-60 overflow-y-auto">
+                          {contactSuggestions.map((c, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setInternalEmail(c.email)
+                                setContactSuggestions([])
+                                setShowSuggestions(false)
+                              }}
+                            >
+                              <div className="text-sm">
+                                <span className="font-medium">{c.name}</span>
+                                {c.department && (
+                                  <span className="text-muted-foreground ml-2 text-xs">{c.department}</span>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">{c.email}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <Select
                       value={internalRole}
