@@ -1,5 +1,4 @@
 import { redirect } from 'next/navigation'
-import { headers } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/ui/Header'
@@ -15,9 +14,7 @@ export default async function DashboardLayout({
   } = await supabase.auth.getUser()
 
   if (!user) {
-    const headersList = await headers()
-    const nextUrl = headersList.get('x-next-url') ?? '/'
-    redirect(`/login?next=${encodeURIComponent(nextUrl)}`)
+    redirect('/login')
   }
 
   return (
