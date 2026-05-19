@@ -17,8 +17,8 @@ export async function GET(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, error } = await (supabase as any)
     .from('contacts')
-    .select('*')
-    .or(`氏名.ilike.%${q}%,メール.ilike.%${q}%`)
+    .select('name, email, department')
+    .or(`name.ilike.%${q}%,email.ilike.%${q}%`)
     .limit(10)
 
   if (error) {
@@ -27,9 +27,9 @@ export async function GET(req: NextRequest) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results = (data ?? []).map((row: any) => ({
-    name: (row['氏名'] as string) ?? '',
-    email: (row['メール'] as string) ?? '',
-    department: (row['所属1 （主務）'] as string) ?? '',
+    name: (row.name as string) ?? '',
+    email: (row.email as string) ?? '',
+    department: (row.department as string) ?? '',
   }))
 
   return NextResponse.json(results)
