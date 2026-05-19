@@ -605,12 +605,12 @@ export function ProjectSettings({
                             }
                           }}
                           onBlur={() => {
-                            setTimeout(() => setShowSuggestions(false), 150)
+                            setTimeout(() => setShowSuggestions(false), 300)
                           }}
                         />
                       </div>
                       {showSuggestions && contactSuggestions.length > 0 && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border rounded-md shadow-md max-h-60 overflow-y-auto">
+                        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border rounded-md shadow-md max-h-60 overflow-y-auto" onMouseDown={(e) => e.preventDefault()}>
                           {contactSuggestions.map((c, i) => (
                             <button
                               key={i}
