@@ -78,10 +78,11 @@ export function ProjectSettings({
 
   // 社内メンバー招待フォーム
   const [internalEmail, setInternalEmail] = useState('')
+  const [internalEmails, setInternalEmails] = useState<{ name: string; email: string }[]>([])
   const [internalRole, setInternalRole] = useState<UserRole>('viewer')
   const [internalInviting, setInternalInviting] = useState(false)
   const [internalError, setInternalError] = useState<string | null>(null)
-  const [internalSuccess, setInternalSuccess] = useState<string | null>(null)
+  const [internalResults, setInternalResults] = useState<{ email: string; success: boolean; message: string }[]>([])
 
   // コンタクトサジェスト
   const [contactSuggestions, setContactSuggestions] = useState<{ name: string; email: string; department: string }[]>([])
@@ -101,31 +102,47 @@ export function ProjectSettings({
   const vendorMembers = members.filter((m) => m.role === 'vendor')
 
   async function handleInternalInvite() {
-    if (!internalEmail.trim()) return
+    // Build the list of targets: chips take priority; fall back to typed text
+    const targets: { name: string; email: string }[] =
+      internalEmails.length > 0
+        ? internalEmails
+        : internalEmail.trim()
+          ? [{ name: internalEmail.trim(), email: internalEmail.trim() }]
+          : []
+    if (targets.length === 0) return
+
     setInternalInviting(true)
     setInternalError(null)
-    setInternalSuccess(null)
-    try {
-      const res = await fetch('/api/members', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: project.id,
-          email: internalEmail.trim(),
-          role: internalRole,
-          // vendor_phase_ids は送らない（null のまま）
-        }),
-      })
-      const json = await res.json() as { error?: string; data?: unknown }
-      if (!res.ok) throw new Error(json.error ?? '招待に失敗しました')
-      setInternalEmail('')
-      setInternalSuccess('招待メールを送信しました')
-    } catch (err) {
-      console.error('Internal invite failed:', err)
-      setInternalError(err instanceof Error ? err.message : '招待に失敗しました')
-    } finally {
-      setInternalInviting(false)
+    setInternalResults([])
+
+    const results: { email: string; success: boolean; message: string }[] = []
+    for (const target of targets) {
+      try {
+        const res = await fetch('/api/members', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: project.id,
+            email: target.email,
+            role: internalRole,
+          }),
+        })
+        const json = await res.json() as { error?: string; data?: unknown }
+        if (!res.ok) throw new Error(json.error ?? '招待に失敗しました')
+        results.push({ email: target.email, success: true, message: '招待しました' })
+      } catch (err) {
+        results.push({
+          email: target.email,
+          success: false,
+          message: err instanceof Error ? err.message : '招待に失敗しました',
+        })
+      }
     }
+
+    setInternalResults(results)
+    setInternalEmails([])
+    setInternalEmail('')
+    setInternalInviting(false)
   }
 
   function handleVendorPhaseToggle(phaseId: string) {
@@ -539,37 +556,58 @@ export function ProjectSettings({
                 <div className="border rounded-lg p-4 space-y-3">
                   <h3 className="font-medium text-sm">社内メンバー招待</h3>
                   <div className="flex gap-2 items-start">
+                    {/* Chip + input container */}
                     <div className="flex-1 relative">
-                      <Input
-                        type="text"
-                        placeholder="名前またはメールアドレス"
-                        value={internalEmail}
-                        onChange={(e) => {
-                          const value = e.target.value
-                          setInternalEmail(value)
-                          if (debounceRef.current) clearTimeout(debounceRef.current)
-                          if (value.length >= 2) {
-                            debounceRef.current = setTimeout(async () => {
-                              try {
-                                const res = await fetch(`/api/contacts?q=${encodeURIComponent(value)}`)
-                                if (res.ok) {
-                                  const data = await res.json()
-                                  setContactSuggestions(data)
-                                  setShowSuggestions(true)
-                                }
-                              } catch {
-                                // ignore fetch errors
+                      <div className="border rounded-md px-2 py-1.5 flex flex-wrap gap-1 items-center min-h-10 focus-within:ring-2 focus-within:ring-ring">
+                        {internalEmails.map((contact, i) => (
+                          <span
+                            key={i}
+                            className="bg-indigo-100 text-indigo-800 text-sm rounded px-2 py-0.5 flex items-center gap-1"
+                          >
+                            {contact.name}
+                            <button
+                              type="button"
+                              className="text-indigo-400 hover:text-indigo-700"
+                              onClick={() =>
+                                setInternalEmails((prev) => prev.filter((_, idx) => idx !== i))
                               }
-                            }, 300)
-                          } else {
-                            setContactSuggestions([])
-                            setShowSuggestions(false)
-                          }
-                        }}
-                        onBlur={() => {
-                          setTimeout(() => setShowSuggestions(false), 150)
-                        }}
-                      />
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        <Input
+                          type="text"
+                          placeholder={internalEmails.length === 0 ? '名前またはメールアドレス' : ''}
+                          value={internalEmail}
+                          className="border-0 shadow-none focus-visible:ring-0 p-0 h-auto flex-1 min-w-32 text-sm"
+                          onChange={(e) => {
+                            const value = e.target.value
+                            setInternalEmail(value)
+                            if (debounceRef.current) clearTimeout(debounceRef.current)
+                            if (value.length >= 2) {
+                              debounceRef.current = setTimeout(async () => {
+                                try {
+                                  const res = await fetch(`/api/contacts?q=${encodeURIComponent(value)}`)
+                                  if (res.ok) {
+                                    const data = await res.json()
+                                    setContactSuggestions(data)
+                                    setShowSuggestions(true)
+                                  }
+                                } catch {
+                                  // ignore fetch errors
+                                }
+                              }, 300)
+                            } else {
+                              setContactSuggestions([])
+                              setShowSuggestions(false)
+                            }
+                          }}
+                          onBlur={() => {
+                            setTimeout(() => setShowSuggestions(false), 150)
+                          }}
+                        />
+                      </div>
                       {showSuggestions && contactSuggestions.length > 0 && (
                         <div className="absolute z-50 left-0 right-0 mt-1 bg-white border rounded-md shadow-md max-h-60 overflow-y-auto">
                           {contactSuggestions.map((c, i) => (
@@ -579,7 +617,11 @@ export function ProjectSettings({
                               className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
                               onMouseDown={(e) => e.preventDefault()}
                               onClick={() => {
-                                setInternalEmail(c.email)
+                                setInternalEmails((prev) => [
+                                  ...prev,
+                                  { name: c.name || c.email, email: c.email },
+                                ])
+                                setInternalEmail('')
                                 setContactSuggestions([])
                                 setShowSuggestions(false)
                               }}
@@ -613,7 +655,7 @@ export function ProjectSettings({
                     </Select>
                     <Button
                       onClick={handleInternalInvite}
-                      disabled={internalInviting || !internalEmail.trim()}
+                      disabled={internalInviting || (internalEmails.length === 0 && !internalEmail.trim())}
                     >
                       {internalInviting ? '送信中...' : '招待'}
                     </Button>
@@ -621,8 +663,20 @@ export function ProjectSettings({
                   {internalError && (
                     <p className="text-sm text-destructive">{internalError}</p>
                   )}
-                  {internalSuccess && (
-                    <p className="text-sm text-green-600">{internalSuccess}</p>
+                  {internalResults.length > 0 && (
+                    <div className="space-y-1">
+                      {internalResults.length === 1 && internalResults[0].success ? (
+                        <p className="text-sm text-green-600">招待メールを送信しました</p>
+                      ) : internalResults.every((r) => r.success) ? (
+                        <p className="text-sm text-green-600">{internalResults.length}名を招待しました</p>
+                      ) : (
+                        internalResults.map((r, i) => (
+                          <p key={i} className={`text-sm ${r.success ? 'text-green-600' : 'text-destructive'}`}>
+                            {r.email}: {r.message}
+                          </p>
+                        ))
+                      )}
+                    </div>
                   )}
                 </div>
 
