@@ -1,10 +1,10 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getProjectWithMembers } from '@/lib/repositories/projectRepository'
-import { getTasks } from '@/lib/repositories/taskRepository'
+import { getTasks, getPhases } from '@/lib/repositories/taskRepository'
 import { derivePermissions } from '@/types/rbac'
 import { ProjectSettings } from '@/components/project/ProjectSettings'
-import type { MemberWithProfile, Task } from '@/types'
+import type { MemberWithProfile, Task, Phase } from '@/types'
 
 export default async function ProjectSettingsPage({
   params,
@@ -22,9 +22,10 @@ export default async function ProjectSettingsPage({
     redirect('/login')
   }
 
-  const [projectWithMembers, tasks] = await Promise.all([
+  const [projectWithMembers, tasks, phases] = await Promise.all([
     getProjectWithMembers(supabase, projectId),
     getTasks(supabase, projectId),
+    getPhases(supabase, projectId),
   ])
 
   if (!projectWithMembers) {
@@ -34,9 +35,9 @@ export default async function ProjectSettingsPage({
   const members = projectWithMembers.project_members as MemberWithProfile[]
   const currentMember = members.find((m) => m.user_id === user.id)
   const role = currentMember?.role ?? 'viewer'
-  const vendorTaskIds = currentMember?.vendor_task_ids ?? null
+  const vendorPhaseIds = currentMember?.vendor_phase_ids ?? null
 
-  const permissions = derivePermissions(role, vendorTaskIds, tasks as Task[])
+  const permissions = derivePermissions(role, vendorPhaseIds, tasks as Task[])
 
   // メンバー管理権限がないユーザーはガントビューにリダイレクト
   if (!permissions.canManageMembers) {
@@ -48,6 +49,7 @@ export default async function ProjectSettingsPage({
       project={projectWithMembers}
       members={members}
       tasks={tasks as Task[]}
+      phases={phases as Phase[]}
       currentUserId={user.id}
       permissions={permissions}
     />

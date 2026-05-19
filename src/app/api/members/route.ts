@@ -92,17 +92,17 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json() as {
       id: string
       role?: UserRole
-      vendor_task_ids?: string[] | null
+      vendor_phase_ids?: string[] | null
     }
 
     if (!body.id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 })
     }
 
-    // Database Update型は role と vendor_task_ids の両方が必須のため、確実な値で更新する
+    // Database Update型は role と vendor_phase_ids の両方が必須のため、確実な値で更新する
     const currentMember = await supabase
       .from('project_members')
-      .select('role, vendor_task_ids, project_id')
+      .select('role, vendor_phase_ids, project_id')
       .eq('id', body.id)
       .single()
 
@@ -110,7 +110,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 })
     }
 
-    // owner のみロール変更・vendor_task_ids 更新可
+    // owner のみロール変更・vendor_phase_ids 更新可
     const { data: isOwner } = await supabase.rpc('is_project_member', {
       p_project_id: currentMember.data.project_id,
       p_user_id: user.id,
@@ -120,12 +120,12 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const updatePayload: { role: UserRole; vendor_task_ids: string[] | null } = {
+    const updatePayload: { role: UserRole; vendor_phase_ids: string[] | null } = {
       role: body.role !== undefined ? body.role : currentMember.data.role,
-      vendor_task_ids:
-        body.vendor_task_ids !== undefined
-          ? body.vendor_task_ids
-          : currentMember.data.vendor_task_ids,
+      vendor_phase_ids:
+        body.vendor_phase_ids !== undefined
+          ? body.vendor_phase_ids
+          : currentMember.data.vendor_phase_ids,
     }
 
     const { data, error } = await supabase

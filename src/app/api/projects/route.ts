@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
       project_id: project.id,
       user_id: user.id,
       role: 'owner',
-      vendor_task_ids: null,
+      vendor_phase_ids: null,
       invited_by: null,
     })
 

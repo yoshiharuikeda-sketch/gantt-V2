@@ -23,6 +23,7 @@ import type {
   Project,
   MemberWithProfile,
   Task,
+  Phase,
   UserPermissions,
   UserRole,
 } from '@/types'
@@ -31,6 +32,7 @@ interface ProjectSettingsProps {
   project: Project
   members: MemberWithProfile[]
   tasks: Task[]
+  phases: Phase[]
   currentUserId: string
   permissions: UserPermissions
 }
@@ -50,6 +52,7 @@ export function ProjectSettings({
   project,
   members: initialMembers,
   tasks,
+  phases,
   currentUserId,
   permissions,
 }: ProjectSettingsProps) {
@@ -66,6 +69,8 @@ export function ProjectSettings({
   const [infoError, setInfoError] = useState<string | null>(null)
   const [infoSuccess, setInfoSuccess] = useState<string | null>(null)
 
+  const [activeTab, setActiveTab] = useState('members')
+
   const [members, setMembers] = useState<MemberWithProfile[]>(initialMembers)
   const [roleChangingIds, setRoleChangingIds] = useState<Set<string>>(new Set())
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
@@ -80,7 +85,7 @@ export function ProjectSettings({
 
   // ベンダー招待フォーム
   const [vendorEmail, setVendorEmail] = useState('')
-  const [vendorTaskIds, setVendorTaskIds] = useState<Set<string>>(new Set())
+  const [vendorPhaseIds, setVendorPhaseIds] = useState<Set<string>>(new Set())
   const [vendorInviting, setVendorInviting] = useState(false)
   const [vendorError, setVendorError] = useState<string | null>(null)
   const [vendorSuccess, setVendorSuccess] = useState<string | null>(null)
@@ -103,7 +108,7 @@ export function ProjectSettings({
           project_id: project.id,
           email: internalEmail.trim(),
           role: internalRole,
-          // vendor_task_ids は送らない（null のまま）
+          // vendor_phase_ids は送らない（null のまま）
         }),
       })
       const json = await res.json() as { error?: string; data?: unknown }
@@ -118,13 +123,13 @@ export function ProjectSettings({
     }
   }
 
-  function handleVendorTaskToggle(taskId: string) {
-    setVendorTaskIds((prev) => {
+  function handleVendorPhaseToggle(phaseId: string) {
+    setVendorPhaseIds((prev) => {
       const next = new Set(prev)
-      if (next.has(taskId)) {
-        next.delete(taskId)
+      if (next.has(phaseId)) {
+        next.delete(phaseId)
       } else {
-        next.add(taskId)
+        next.add(phaseId)
       }
       return next
     })
@@ -136,7 +141,7 @@ export function ProjectSettings({
     setVendorError(null)
     setVendorSuccess(null)
     try {
-      // まずベンダーとして招待（RPC が vendor_task_ids を '{}' で初期化する）
+      // まずベンダーとして招待（RPC が vendor_phase_ids を '{}' で初期化する）
       const postRes = await fetch('/api/members', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -151,8 +156,8 @@ export function ProjectSettings({
         (postJson.error) ?? '招待に失敗しました'
       )
 
-      // 選択済みのタスクIDがあれば担当スコープを設定する
-      const selectedIds = Array.from(vendorTaskIds)
+      // 選択済みのフェーズIDがあれば担当スコープを設定する
+      const selectedIds = Array.from(vendorPhaseIds)
       const memberId =
         postJson.data !== null &&
         typeof postJson.data === 'object' &&
@@ -166,15 +171,15 @@ export function ProjectSettings({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: memberId,
-            vendor_task_ids: selectedIds,
+            vendor_phase_ids: selectedIds,
           }),
         })
         const patchJson = await patchRes.json() as { error?: string }
-        if (!patchRes.ok) throw new Error(patchJson.error ?? 'タスクスコープの設定に失敗しました')
+        if (!patchRes.ok) throw new Error(patchJson.error ?? 'フェーズスコープの設定に失敗しました')
       }
 
       setVendorEmail('')
-      setVendorTaskIds(new Set())
+      setVendorPhaseIds(new Set())
       setVendorSuccess('ベンダーを招待しました')
     } catch (err) {
       console.error('Vendor invite failed:', err)
@@ -251,18 +256,18 @@ export function ProjectSettings({
     }
   }
 
-  async function handleScopeChange(memberId: string, taskIds: string[]) {
+  async function handleScopeChange(memberId: string, phaseIds: string[]) {
     const res = await fetch('/api/members', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: memberId, vendor_task_ids: taskIds }),
+      body: JSON.stringify({ id: memberId, vendor_phase_ids: phaseIds }),
     })
     const json = await res.json() as { error?: string; data?: MemberWithProfile }
     if (!res.ok) throw new Error(json.error ?? 'スコープ更新に失敗しました')
     // API 成功後は常にローカルステートとストアを同期する
     const updated = members.map((m) =>
       m.id === memberId
-        ? { ...m, ...(json.data ?? {}), vendor_task_ids: taskIds }
+        ? { ...m, ...(json.data ?? {}), vendor_phase_ids: phaseIds }
         : m
     )
     setMembers(updated)
@@ -334,7 +339,19 @@ export function ProjectSettings({
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-xl font-semibold mb-6">{project.name} — 設定</h1>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => router.back()}>
+            ← 戻る
+          </Button>
+          <h1 className="text-xl font-semibold">{project.name} — 設定</h1>
+        </div>
+        {activeTab === 'info' && (
+          <Button onClick={handleInfoSave} disabled={infoLoading}>
+            {infoLoading ? '保存中...' : '保存'}
+          </Button>
+        )}
+      </div>
 
       {globalError && (
         <div className="mb-4 p-3 rounded-md bg-destructive/10 text-destructive text-sm">
@@ -342,7 +359,7 @@ export function ProjectSettings({
         </div>
       )}
 
-      <Tabs defaultValue="members">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="info">基本情報</TabsTrigger>
           <TabsTrigger value="members">メンバー管理</TabsTrigger>
@@ -480,10 +497,10 @@ export function ProjectSettings({
                         ) : (
                           <Badge variant="outline">{ROLE_LABELS[member.role]}</Badge>
                         )}
-                        {/* ベンダー行に担当タスク数を表示する */}
+                        {/* ベンダー行に担当フェーズ数を表示する */}
                         {member.role === 'vendor' && (
                           <p className="text-xs text-muted-foreground mt-1">
-                            担当タスク数: {member.vendor_task_ids?.length ?? 0}件
+                            担当フェーズ数: {member.vendor_phase_ids?.length ?? 0}件
                           </p>
                         )}
                       </td>
@@ -558,9 +575,9 @@ export function ProjectSettings({
                 {/* ベンダー招待 */}
                 <div className="border rounded-lg p-4 space-y-3">
                   <h3 className="font-medium text-sm">ベンダー招待</h3>
-                  {tasks.length === 0 ? (
+                  {phases.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      先にタスクを追加してください
+                      先にフェーズを追加してください
                     </p>
                   ) : (
                     <>
@@ -582,24 +599,24 @@ export function ProjectSettings({
                       </div>
                       <div className="space-y-1.5">
                         <p className="text-xs text-muted-foreground font-medium">
-                          担当タスクを選択（後から変更可能）
+                          担当フェーズを選択（後から変更可能）
                         </p>
                         <ScrollArea className="max-h-48 border rounded-md p-2">
                           <div className="space-y-2 p-1">
-                            {tasks.map((task) => (
-                              <div key={task.id} className="flex items-center gap-2">
+                            {phases.map((phase) => (
+                              <div key={phase.id} className="flex items-center gap-2">
                                 <input
                                   type="checkbox"
-                                  id={`vendor-invite-task-${task.id}`}
-                                  checked={vendorTaskIds.has(task.id)}
-                                  onChange={() => handleVendorTaskToggle(task.id)}
+                                  id={`vendor-invite-phase-${phase.id}`}
+                                  checked={vendorPhaseIds.has(phase.id)}
+                                  onChange={() => handleVendorPhaseToggle(phase.id)}
                                   className="h-4 w-4 rounded border-gray-300"
                                 />
                                 <Label
-                                  htmlFor={`vendor-invite-task-${task.id}`}
+                                  htmlFor={`vendor-invite-phase-${phase.id}`}
                                   className="font-normal cursor-pointer"
                                 >
-                                  {task.name}
+                                  {phase.name}
                                 </Label>
                               </div>
                             ))}
@@ -618,15 +635,15 @@ export function ProjectSettings({
               </div>
             )}
 
-            {/* ベンダーメンバーの担当タスク変更（オーナーのみ） */}
+            {/* ベンダーメンバーの担当フェーズ変更（オーナーのみ） */}
             {permissions.canManageMembers && vendorMembers.length > 0 && (
               <div className="border rounded-lg p-4 space-y-4">
-                <h3 className="font-medium text-sm">ベンダーの担当タスク変更</h3>
+                <h3 className="font-medium text-sm">ベンダーの担当フェーズ変更</h3>
                 {vendorMembers.map((member) => (
                   <div key={member.id} className="border-t pt-4 first:border-t-0 first:pt-0">
                     <VendorMemberTaskScope
                       member={member}
-                      tasks={tasks}
+                      phases={phases}
                       onScopeChange={handleScopeChange}
                     />
                   </div>
@@ -662,7 +679,7 @@ export function ProjectSettings({
                     <div key={member.id} className="border-t pt-4 first:border-t-0 first:pt-0">
                       <VendorMemberTaskScope
                         member={member}
-                        tasks={tasks}
+                        phases={phases}
                         onScopeChange={handleScopeChange}
                       />
                     </div>

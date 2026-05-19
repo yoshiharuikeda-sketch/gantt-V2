@@ -69,13 +69,13 @@ export function ProjectView({
 
     const currentMember = members.find((m) => m.user_id === currentUser.id)
     const role = currentMember?.role ?? 'viewer'
-    const vendorTaskIds = currentMember?.vendor_task_ids ?? null
+    const vendorPhaseIds = currentMember?.vendor_phase_ids ?? null
 
     setCurrentProject(project)
     setMembers(members)
     setCurrentUserRole(role)
     setCurrentUserId(currentUser.id)
-    setPermissions(derivePermissions(role, vendorTaskIds, tasks))
+    setPermissions(derivePermissions(role, vendorPhaseIds, tasks))
   }, [
     project,
     members,

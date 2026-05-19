@@ -11,7 +11,7 @@ import { canVendorEditTask } from '@/types/rbac'
 import { TaskDetailModal } from '@/components/task/TaskDetailModal'
 import type { UndoCommand } from '@/hooks/useUndoRedo'
 import { buildWbsNumberMap } from '@/lib/utils/taskTree'
-import type { TaskWithBaseline, GanttColKey, UserPermissions } from '@/types'
+import type { TaskWithBaseline, GanttColKey, UserPermissions, MemberWithProfile } from '@/types'
 import type { Task, Phase } from '@/types'
 
 const DEFAULT_COL_WIDTHS: Record<GanttColKey, number> = {
@@ -55,6 +55,11 @@ function loadColWidths(): Record<GanttColKey, number> {
 
 // Columns that cannot be directly edited in the inline cell
 const NON_EDITABLE_COLS = new Set<GanttColKey>(['vendor', 'updated_at'])
+
+// Vendor column locking is implemented via the `members` prop on GanttLeftPanel.
+// vendorLockedPhaseIds (built inside GanttLeftPanel) marks phases assigned to any vendor
+// member via vendor_phase_ids. TaskRow's vendor cell is non-clickable and shows a lock
+// indicator when the task's phase_id is in that set.
 
 function fmtDate(val: string | null | undefined): string {
   if (!val) return '-'
@@ -103,6 +108,8 @@ interface GanttLeftPanelProps {
   onSelectedRowChange?: (taskId: string | null) => void
   /** Width of the left panel container (from the drag divider). Used to compute dynamic name column width. */
   containerWidth: number
+  /** Project members — used to compute vendor-locked phases (phases assigned to a vendor via vendor_phase_ids) */
+  members?: MemberWithProfile[]
 }
 
 // ─── PhaseRow ─────────────────────────────────────────────────────────────────
@@ -290,6 +297,8 @@ interface TaskRowProps {
   isInRowClipboard: boolean
   rowClipboardMode: 'copy' | 'cut' | null
   cellCutCols: Set<GanttColKey> | null
+  /** Phase IDs whose vendor column cells are locked (non-clickable) for non-vendor roles */
+  vendorLockedPhaseIds: Set<string>
   onEditValueChange: (v: string) => void
   onCellClick: (task: TaskWithBaseline, col: GanttColKey) => void
   onCellDoubleClick: (task: TaskWithBaseline, col: GanttColKey) => void
@@ -332,6 +341,7 @@ function TaskRow({
   isInRowClipboard,
   rowClipboardMode,
   cellCutCols,
+  vendorLockedPhaseIds,
   onEditValueChange,
   onCellClick,
   onCellDoubleClick,
@@ -399,6 +409,8 @@ function TaskRow({
         const isSelected_ = !isEditing && !isInSelectionRange && selectedCell?.taskId === task.id && selectedCell?.col === col
         const isEditable = !NON_EDITABLE_COLS.has(col)
         const indentPx = colIdx === 0 ? task.depth * 16 : 0
+        // Vendor column is locked for tasks in vendor-assigned phases
+        const isVendorLocked = col === 'vendor' && task.phase_id != null && vendorLockedPhaseIds.has(task.phase_id)
 
         return (
           <div
@@ -411,9 +423,11 @@ function TaskRow({
                   ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50'
                   : isSelected_
                     ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50'
-                    : isEditable
-                      ? 'cursor-pointer hover:bg-indigo-50'
-                      : '',
+                    : isVendorLocked
+                      ? 'cursor-not-allowed'
+                      : isEditable
+                        ? 'cursor-pointer hover:bg-indigo-50'
+                        : '',
             ].join(' ')}
             style={{
               width: colWidths[col],
@@ -435,17 +449,30 @@ function TaskRow({
                 onRowDetailClick(task.id)
                 return
               }
+              // Vendor cell is locked for tasks in vendor-assigned phases — ignore the click entirely
+              if (isVendorLocked) return
               // シングルクリックは行選択＋セル選択のみ（編集開始しない）
               onRowSelect(task.id, e)
               if (isEditable) onCellClick(task, col)
             }}
             onDoubleClick={(e) => {
               e.stopPropagation()
+              if (isVendorLocked) return
               if (isEditable) onCellDoubleClick(task, col)
             }}
           >
             {col === 'vendor' ? (
-              task.vendor?.display_name ? (
+              isVendorLocked ? (
+                // Phase is vendor-assigned — show existing display but indicate it's locked
+                <span className="flex items-center gap-1 min-w-0">
+                  {task.vendor?.display_name && (
+                    <Badge variant="secondary" className="text-xs truncate max-w-full">
+                      {task.vendor.display_name}
+                    </Badge>
+                  )}
+                  <span className="text-slate-400 text-xs flex-shrink-0" title="このフェーズはベンダーに割り当て済みです">🔒</span>
+                </span>
+              ) : task.vendor?.display_name ? (
                 <Badge variant="secondary" className="text-xs truncate max-w-full">
                   {task.vendor.display_name}
                 </Badge>
@@ -765,7 +792,7 @@ function getDefaultRawValue(col: GanttColKey): string {
   }
 }
 
-export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange, containerWidth }: GanttLeftPanelProps) {
+export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange, containerWidth, members }: GanttLeftPanelProps) {
   const currentUserId = useProjectStore((s) => s.currentUserId)
   const currentProject = useProjectStore((s) => s.currentProject)
   const upsertTask = useTaskStore((s) => s.upsertTask)
@@ -900,6 +927,23 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const selectionRangeRef = useRef<Set<string> | null>(null)
   // Ref for displayedTaskIds so handleCellKeyDown can access it without ordering issues
   const displayedTaskIdsRef = useRef<string[]>([])
+
+  // ─── Vendor column locking ────────────────────────────────────────────────────
+
+  // Collect all phase IDs that have been assigned to at least one vendor member.
+  // The vendor column cell for tasks in these phases is locked (non-clickable) for owner/editor roles.
+  const vendorLockedPhaseIds = useMemo<Set<string>>(() => {
+    if (!members) return new Set()
+    const ids = new Set<string>()
+    for (const m of members) {
+      if (m.role === 'vendor' && m.vendor_phase_ids) {
+        for (const phaseId of m.vendor_phase_ids) {
+          ids.add(phaseId)
+        }
+      }
+    }
+    return ids
+  }, [members])
 
   // ─── Phase grouping ──────────────────────────────────────────────────────────
 
@@ -3200,6 +3244,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 isInRowClipboard={rowClipboard !== null && rowClipboard.rows.some((r) => r.id === task.id)}
                 rowClipboardMode={rowClipboard?.mode ?? null}
                 cellCutCols={cutCols}
+                vendorLockedPhaseIds={vendorLockedPhaseIds}
                 onEditValueChange={setEditValue}
                 onCellClick={selectCell}
                 onCellDoubleClick={openCell}

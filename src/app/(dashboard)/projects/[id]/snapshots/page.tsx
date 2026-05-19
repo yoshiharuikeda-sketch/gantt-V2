@@ -36,9 +36,9 @@ export default async function SnapshotsPage({
   const members = projectWithMembers.project_members as MemberWithProfile[]
   const currentMember = members.find((m) => m.user_id === user.id)
   const role = currentMember?.role ?? 'viewer'
-  const vendorTaskIds = currentMember?.vendor_task_ids ?? null
+  const vendorPhaseIds = currentMember?.vendor_phase_ids ?? null
 
-  const permissions = derivePermissions(role, vendorTaskIds, tasks as Task[])
+  const permissions = derivePermissions(role, vendorPhaseIds, tasks as Task[])
 
   if (!permissions.canCreateSnapshot) {
     redirect(`/projects/${projectId}`)

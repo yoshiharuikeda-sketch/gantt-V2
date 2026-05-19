@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
       // vendor かどうか確認
       const { data: memberRow, error: memberError } = await supabase
         .from('project_members')
-        .select('role, vendor_task_ids')
+        .select('role, vendor_phase_ids')
         .eq('project_id', body.project_id)
         .eq('user_id', user.id)
         .single()
@@ -76,14 +76,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
 
-      // ベンダーは parent_task_id が自分の担当タスクスコープ内である必要がある
-      if (!body.parent_task_id) {
-        return NextResponse.json({ error: 'Forbidden: vendor must specify a parent task within their scope' }, { status: 403 })
+      // ベンダーは phase_id が自分の担当フェーズスコープ内である必要がある
+      if (!body.phase_id) {
+        return NextResponse.json({ error: 'Forbidden: vendor must specify a phase within their scope' }, { status: 403 })
       }
 
-      const vendorTaskIds: string[] = memberRow.vendor_task_ids ?? []
-      if (!vendorTaskIds.includes(body.parent_task_id)) {
-        return NextResponse.json({ error: 'Forbidden: parent task is not within vendor scope' }, { status: 403 })
+      const vendorPhaseIds: string[] = memberRow.vendor_phase_ids ?? []
+      if (!vendorPhaseIds.includes(body.phase_id)) {
+        return NextResponse.json({ error: 'Forbidden: phase is not within vendor scope' }, { status: 403 })
       }
     }
 

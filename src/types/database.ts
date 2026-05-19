@@ -48,7 +48,7 @@ export type ProjectMember = {
   project_id: string
   user_id: string
   role: UserRole
-  vendor_task_ids: string[] | null
+  vendor_phase_ids: string[] | null
   invited_by: string | null
   joined_at: string
 }
@@ -190,7 +190,7 @@ export type Database = {
       project_members: {
         Row: ProjectMember
         Insert: Omit<ProjectMember, 'id' | 'joined_at'>
-        Update: Pick<ProjectMember, 'role' | 'vendor_task_ids'>
+        Update: Pick<ProjectMember, 'role' | 'vendor_phase_ids'>
         Relationships: []
       }
       phases: {

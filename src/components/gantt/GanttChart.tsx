@@ -74,6 +74,7 @@ export function GanttChart() {
   const collapsedPhaseIds = useUiStore((s) => s.collapsedPhaseIds)
   const permissions = useProjectStore((s) => s.permissions)
   const currentProject = useProjectStore((s) => s.currentProject)
+  const members = useProjectStore((s) => s.members)
   const phases = useTaskStore((s) => s.phases)
   const upsertPhase = useTaskStore((s) => s.upsertPhase)
   const upsertTask = useTaskStore((s) => s.upsertTask)
@@ -383,6 +384,7 @@ export function GanttChart() {
             onEditingChange={(editing) => { activeCellRef.current = editing }}
             onSelectedRowChange={(id) => setSelectedTaskIdForConversion(id)}
             containerWidth={measuredLeftWidth}
+            members={members}
           />
         </div>
 

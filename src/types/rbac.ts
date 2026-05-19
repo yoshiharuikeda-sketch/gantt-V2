@@ -1,25 +1,21 @@
 import type { UserRole, Task, UserPermissions } from './index'
 
 /**
- * ベンダーが閲覧可能な task ID セットを計算する。
- * 担当タスク（assignedTaskIds）＋ その全祖先タスクが対象。
+ * ベンダーが閲覧可能な task ID セットをフェーズ単位で計算する。
+ * 担当フェーズ（assignedPhaseIds）に属する全タスクが対象。
  * RLS と client-side store の両方で使用し、二重防御を実現する。
  */
 export function computeVendorVisibleTaskIds(
-  assignedTaskIds: string[],
-  allTasks: Pick<Task, 'id' | 'parent_task_id'>[]
+  assignedPhaseIds: string[],
+  allTasks: Pick<Task, 'id' | 'phase_id'>[]
 ): Set<string> {
-  const visible = new Set<string>(assignedTaskIds)
-  const taskMap = new Map(allTasks.map((t) => [t.id, t]))
-
-  for (const taskId of assignedTaskIds) {
-    let current = taskMap.get(taskId)
-    while (current?.parent_task_id) {
-      visible.add(current.parent_task_id)
-      current = taskMap.get(current.parent_task_id)
+  const phaseSet = new Set(assignedPhaseIds)
+  const visible = new Set<string>()
+  for (const task of allTasks) {
+    if (task.phase_id && phaseSet.has(task.phase_id)) {
+      visible.add(task.id)
     }
   }
-
   return visible
 }
 
@@ -29,8 +25,8 @@ export function computeVendorVisibleTaskIds(
  */
 export function derivePermissions(
   role: UserRole,
-  vendorTaskIds: string[] | null,
-  allTasks: Pick<Task, 'id' | 'parent_task_id'>[]
+  vendorPhaseIds: string[] | null,
+  allTasks: Pick<Task, 'id' | 'phase_id'>[]
 ): UserPermissions {
   const isVendor = role === 'vendor'
 
@@ -44,8 +40,8 @@ export function derivePermissions(
     // ベンダーはスコープ未設定（null）でも全タスク閲覧を防ぐため空 Set を返す。
     // null はベンダー以外の「フィルタなし」を意味する。
     visibleTaskIds: isVendor
-      ? vendorTaskIds !== null
-        ? computeVendorVisibleTaskIds(vendorTaskIds, allTasks)
+      ? vendorPhaseIds !== null
+        ? computeVendorVisibleTaskIds(vendorPhaseIds, allTasks)
         : new Set<string>()
       : null,
   }
