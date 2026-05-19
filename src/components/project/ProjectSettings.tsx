@@ -84,6 +84,7 @@ export function ProjectSettings({
   const [internalInviting, setInternalInviting] = useState(false)
   const [internalError, setInternalError] = useState<string | null>(null)
   const [internalResults, setInternalResults] = useState<{ email: string; success: boolean; message: string }[]>([])
+  const [copyLabel, setCopyLabel] = useState('コピー')
 
   // コンタクトサジェスト
   const [contactSuggestions, setContactSuggestions] = useState<{ name: string; email: string; department: string }[]>([])
@@ -666,10 +667,26 @@ export function ProjectSettings({
                   )}
                   {internalResults.length > 0 && (
                     <div className="space-y-1">
-                      {internalResults.length === 1 && internalResults[0].success ? (
-                        <p className="text-sm text-green-600">招待メールを送信しました</p>
-                      ) : internalResults.every((r) => r.success) ? (
-                        <p className="text-sm text-green-600">{internalResults.length}名を招待しました</p>
+                      {internalResults.every((r) => r.success) ? (
+                        <div className="space-y-2">
+                          <p className="text-sm text-green-600">招待しました。以下のURLを相手に共有してください</p>
+                          <div className="flex items-center gap-2">
+                            <code className="flex-1 text-sm bg-muted px-3 py-1.5 rounded border select-all">
+                              https://gantt-v2.vercel.app
+                            </code>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                navigator.clipboard.writeText('https://gantt-v2.vercel.app')
+                                setCopyLabel('コピーしました！')
+                                setTimeout(() => setCopyLabel('コピー'), 2000)
+                              }}
+                            >
+                              {copyLabel}
+                            </Button>
+                          </div>
+                        </div>
                       ) : (
                         internalResults.map((r, i) => (
                           <p key={i} className={`text-sm ${r.success ? 'text-green-600' : 'text-destructive'}`}>

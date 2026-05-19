@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Resend } from 'resend'
 import { createClient } from '@/lib/supabase/server'
 import type { UserRole } from '@/types/database'
-
-const resend = new Resend(process.env.RESEND_API_KEY)
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -76,22 +73,6 @@ export async function POST(req: NextRequest) {
     })
 
     if (error) throw new Error(error.message)
-
-    // 招待メール送信（失敗しても招待自体は成功扱い）
-    try {
-      await resend.emails.send({
-        from: 'onboarding@resend.dev',
-        to: body.email,
-        subject: 'プロジェクトに招待されました',
-        html: `
-          <p>あなたはプロジェクトに招待されました。</p>
-          <p>以下のリンクからアプリにアクセスしてください。</p>
-          <p><a href="https://gantt-v2.vercel.app">https://gantt-v2.vercel.app</a></p>
-        `,
-      })
-    } catch (emailErr) {
-      console.error('招待メール送信エラー:', emailErr)
-    }
 
     return NextResponse.json({ data }, { status: 201 })
   } catch (err) {
