@@ -21,3 +21,16 @@ USING (
       AND role = 'owner'
   )
 );
+
+-- Allow users to read and delete their own pending invites (needed for auth callback processing)
+CREATE POLICY "Users can read their own pending invites"
+ON pending_invites
+FOR SELECT
+TO authenticated
+USING (email = auth.email());
+
+CREATE POLICY "Users can delete their own pending invites"
+ON pending_invites
+FOR DELETE
+TO authenticated
+USING (email = auth.email());
