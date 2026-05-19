@@ -38,7 +38,8 @@ interface ProjectSettingsProps {
 }
 
 // ロールは招待フォームで選択可能なものに制限する
-const INTERNAL_ROLES: UserRole[] = ['editor', 'viewer', 'limited_viewer']
+const INTERNAL_ROLES: UserRole[] = ['editor', 'viewer']
+const CHANGEABLE_ROLES: UserRole[] = ['editor', 'viewer']
 
 const ROLE_LABELS: Record<UserRole, string> = {
   owner: 'オーナー',
@@ -509,7 +510,7 @@ export function ProjectSettings({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {(Object.keys(ROLE_LABELS) as UserRole[]).map((role) => (
+                              {CHANGEABLE_ROLES.map((role) => (
                                 <SelectItem key={role} value={role}>
                                   {ROLE_LABELS[role]}
                                 </SelectItem>
