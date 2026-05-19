@@ -41,6 +41,7 @@ function LoginForm() {
     }
 
     const next = searchParams.get('next') ?? '/'
+    router.refresh()
     router.push(next)
   }
 
