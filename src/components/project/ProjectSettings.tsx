@@ -672,13 +672,13 @@ export function ProjectSettings({
                           <p className="text-sm text-green-600">招待しました。以下のURLを相手に共有してください</p>
                           <div className="flex items-center gap-2">
                             <code className="flex-1 text-sm bg-muted px-3 py-1.5 rounded border select-all">
-                              https://gantt-v2.vercel.app
+                              {`${window.location.origin}/projects/${project.id}`}
                             </code>
                             <Button
                               size="sm"
                               variant="outline"
                               onClick={() => {
-                                navigator.clipboard.writeText('https://gantt-v2.vercel.app')
+                                navigator.clipboard.writeText(`${window.location.origin}/projects/${project.id}`)
                                 setCopyLabel('コピーしました！')
                                 setTimeout(() => setCopyLabel('コピー'), 2000)
                               }}
