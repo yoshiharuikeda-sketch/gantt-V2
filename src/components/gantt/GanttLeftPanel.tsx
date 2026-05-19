@@ -806,6 +806,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const selectedRowIdsRef = useRef<Set<string>>(new Set())
   const selectedRowIdRef = useRef<string | null>(null)
   const selectionRangeRef = useRef<Set<string> | null>(null)
+  // Ref for displayedTaskIds so handleCellKeyDown can access it without ordering issues
+  const displayedTaskIdsRef = useRef<string[]>([])
 
   // ─── Phase grouping ──────────────────────────────────────────────────────────
 
@@ -1063,6 +1065,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     col: GanttColKey,
   ) => {
     if (e.key !== 'Tab' && e.key !== 'Enter') return
+
+    // IMEの変換確定（compositionend直後のEnter）はセル移動しない
+    if (e.key === 'Enter' && e.nativeEvent.isComposing) return
+
     e.preventDefault()
 
     // commit is triggered by blur (Tab moves focus away), avoid double-fire
@@ -1078,11 +1084,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           // Delay so blur fires first
           setTimeout(() => openCell(task, nextCol), 0)
         } else {
-          const taskIdx = tasks.findIndex((t) => t.id === task.id)
+          const orderedIds = displayedTaskIdsRef.current
+          const taskIdx = orderedIds.indexOf(task.id)
           if (taskIdx > 0) {
-            const prevTask = tasks[taskIdx - 1]
+            const prevTaskId = orderedIds[taskIdx - 1]
+            const prevTask = tasks.find((t) => t.id === prevTaskId)
             const lastCol = editableCols[editableCols.length - 1]
-            setTimeout(() => openCell(prevTask, lastCol), 0)
+            if (prevTask) setTimeout(() => openCell(prevTask, lastCol), 0)
           }
         }
       } else {
@@ -1090,10 +1098,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           const nextCol = editableCols[colIdx + 1]
           setTimeout(() => openCell(task, nextCol), 0)
         } else {
-          const taskIdx = tasks.findIndex((t) => t.id === task.id)
-          if (taskIdx < tasks.length - 1) {
-            const nextTask = tasks[taskIdx + 1]
-            setTimeout(() => openCell(nextTask, editableCols[0]), 0)
+          const orderedIds = displayedTaskIdsRef.current
+          const taskIdx = orderedIds.indexOf(task.id)
+          if (taskIdx < orderedIds.length - 1) {
+            const nextTaskId = orderedIds[taskIdx + 1]
+            const nextTask = tasks.find((t) => t.id === nextTaskId)
+            if (nextTask) setTimeout(() => openCell(nextTask, editableCols[0]), 0)
           } else {
             // Move to the first empty row and open it for editing
             setTimeout(() => {
@@ -1104,12 +1114,20 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         }
       }
     } else {
-      // Enter: commit then move to same column next row
+      // Enter: commit then move to same column next row (選択状態のみ・編集モードには入らない)
       void commitEdit(task).then(() => {
-        const taskIdx = tasks.findIndex((t) => t.id === task.id)
-        if (taskIdx < tasks.length - 1) {
-          const nextTask = tasks[taskIdx + 1]
-          setTimeout(() => openCell(nextTask, col), 0)
+        const orderedIds = displayedTaskIdsRef.current
+        const taskIdx = orderedIds.indexOf(task.id)
+        if (taskIdx < orderedIds.length - 1) {
+          const nextTaskId = orderedIds[taskIdx + 1]
+          const nextTask = tasks.find((t) => t.id === nextTaskId)
+          if (nextTask) {
+            setTimeout(() => {
+              setSelectedCell({ taskId: nextTask.id, col })
+              setSelectedRowId(nextTask.id)
+              setSelectedRowIds(new Set([nextTask.id]))
+            }, 0)
+          }
         } else {
           setTimeout(() => {
             setEditingEmptyRowIndex(0)
@@ -1184,6 +1202,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         .map((r) => r.task.id),
     [rows]
   )
+  // Keep ref in sync so handleCellKeyDown always reads the latest displayed order
+  displayedTaskIdsRef.current = displayedTaskIds
 
   const handleRowSelect = useCallback((taskId: string, e: React.MouseEvent) => {
     const isMod = e.ctrlKey || e.metaKey
@@ -2014,15 +2034,21 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   }, [resolveSelectionRect, copyCellsToClipboard])
 
   const handleCellCut = useCallback(async () => {
+    console.log('[cut] start, rect=', resolveSelectionRect())
     const rect = resolveSelectionRect()
     if (!rect || !permissions?.canEdit) return
     await copyCellsToClipboard(rect)
     // Deferred cut: mark source cells as pending (faded) — actual clearing happens on paste
     setCellCutRect({ rowIds: rect.rowIds, cols: rect.cols })
+    console.log('[cut] cellCutRect set:', { rowIds: rect.rowIds, cols: rect.cols }, 'ref:', cellCutRectRef.current)
   }, [resolveSelectionRect, copyCellsToClipboard, permissions])
 
   const handleCellPaste = useCallback(async () => {
-    if (!permissions?.canEdit) return
+    console.log('[paste] start, cellCutRectRef.current=', cellCutRectRef.current, 'permissions=', permissions?.canEdit)
+    if (!permissions?.canEdit) {
+      console.log('[paste] early return: no canEdit permission')
+      return
+    }
     // Origin cell: top-left of selection range, or selectedCell.
     // Read anchor/head from refs so we always see the latest selection
     // even if this callback was captured before the most recent state update.
@@ -2045,20 +2071,27 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       originCol = selectedCell.col
     }
 
-    if (!originTaskId || !originCol) return
+    if (!originTaskId || !originCol) {
+      console.log('[paste] early return: no originTaskId or originCol', { originTaskId, originCol })
+      return
+    }
 
     let text: string
     try {
       text = await navigator.clipboard.readText()
-    } catch {
+    } catch (err) {
       // navigator.clipboard.readText is unavailable (non-secure context or permission denied)
+      console.log('[paste] early return: clipboard.readText failed', err)
       return
     }
 
     const cellPasteRows = text.split('\n').map((line) => line.split('\t'))
     const originRowIdx = displayedTaskIds.indexOf(originTaskId)
     const originColIdx = editableCols.indexOf(originCol)
-    if (originRowIdx === -1 || originColIdx === -1) return
+    if (originRowIdx === -1 || originColIdx === -1) {
+      console.log('[paste] early return: originRowIdx or originColIdx not found', { originRowIdx, originColIdx })
+      return
+    }
 
     const patches: { task: TaskWithBaseline; beforeValues: Record<string, string | number | null>; payload: Record<string, string | number | null> }[] = []
 
@@ -2130,8 +2163,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // Also read the latest task versions directly from Zustand (getState) so
     // we use the version incremented by the paste PATCHes above —
     // tasksRef.current and the closure are both stale until the next React render.
+    console.log('[paste] about to check liveCutRect:', cellCutRectRef.current)
     const liveCutRect = cellCutRectRef.current
     if (liveCutRect) {
+      console.log('[paste] liveCutRect found, rows:', liveCutRect.rowIds, 'cols:', liveCutRect.cols)
       const cutPatches: { task: TaskWithBaseline; payload: Record<string, string | number | null> }[] = []
       for (const rowId of liveCutRect.rowIds) {
         // tasksRef may be stale; get the latest version from the live store
@@ -2387,11 +2422,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
       if (e.key === 'x') {
         e.preventDefault()
+        console.log('[kbd] Cmd+X → System A cell cut')
         void handleCellCut()
         return
       }
       if (e.key === 'v') {
         e.preventDefault()
+        console.log('[kbd] Cmd+V → handleCellPaste')
         void handleCellPaste()
         return
       }
@@ -2421,6 +2458,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // Cmd+V fallback: paste even when no explicit cell/range selection
     if (isMod && e.key === 'v') {
       e.preventDefault()
+      console.log('[kbd] Cmd+V → handleCellPaste (fallback, no cell/range selection)')
       void handleCellPaste()
       return
     }

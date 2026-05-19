@@ -29,6 +29,7 @@ export default function RegisterPage() {
         // メール確認後に callback が走りセッションが確立されるまで profiles は upsert できないため、
         // display_name は auth metadata として持ち、callback 後に profiles へ insert するのが安全。
         // ただしここでは確認メールなしの即時登録も考慮し、signUp 直後に user が返れば insert を試みる。
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
         data: { display_name: displayName },
       },
     })
