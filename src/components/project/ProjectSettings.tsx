@@ -83,7 +83,7 @@ export function ProjectSettings({
   const [internalRole, setInternalRole] = useState<UserRole>('viewer')
   const [internalInviting, setInternalInviting] = useState(false)
   const [internalError, setInternalError] = useState<string | null>(null)
-  const [internalResults, setInternalResults] = useState<{ email: string; success: boolean; message: string }[]>([])
+  const [internalResults, setInternalResults] = useState<{ email: string; success: boolean; pending?: boolean; message: string }[]>([])
   const [copyLabel, setCopyLabel] = useState('コピー')
 
   // コンタクトサジェスト
@@ -117,7 +117,7 @@ export function ProjectSettings({
     setInternalError(null)
     setInternalResults([])
 
-    const results: { email: string; success: boolean; message: string }[] = []
+    const results: { email: string; success: boolean; pending?: boolean; message: string }[] = []
     for (const target of targets) {
       try {
         const res = await fetch('/api/members', {
@@ -129,9 +129,14 @@ export function ProjectSettings({
             role: internalRole,
           }),
         })
-        const json = await res.json() as { error?: string; data?: unknown }
+        const json = await res.json() as { error?: string; data?: unknown; pending?: boolean }
         if (!res.ok) throw new Error(json.error ?? '招待に失敗しました')
-        results.push({ email: target.email, success: true, message: '招待しました' })
+        results.push({
+          email: target.email,
+          success: true,
+          pending: json.pending === true,
+          message: json.pending ? '招待を保存しました' : '招待しました',
+        })
       } catch (err) {
         results.push({
           email: target.email,
@@ -669,7 +674,17 @@ export function ProjectSettings({
                     <div className="space-y-1">
                       {internalResults.every((r) => r.success) ? (
                         <div className="space-y-2">
-                          <p className="text-sm text-green-600">招待しました。以下のURLを相手に共有してください</p>
+                          {internalResults.every((r) => r.pending) ? (
+                            <p className="text-sm text-green-600">
+                              招待を保存しました。相手がアカウント登録後に自動的にプロジェクトに追加されます。以下のURLを共有してください
+                            </p>
+                          ) : internalResults.some((r) => r.pending) ? (
+                            <p className="text-sm text-green-600">
+                              招待しました（一部はアカウント登録後に自動追加されます）。以下のURLを共有してください
+                            </p>
+                          ) : (
+                            <p className="text-sm text-green-600">招待しました。以下のURLを相手に共有してください</p>
+                          )}
                           <div className="flex items-center gap-2">
                             <code className="flex-1 text-sm bg-muted px-3 py-1.5 rounded border select-all">
                               {`${window.location.origin}/projects/${project.id}`}

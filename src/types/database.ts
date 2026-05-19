@@ -118,6 +118,15 @@ export type Snapshot = {
   readonly phase_snapshot: PhaseSnapshot[]
 }
 
+export type PendingInvite = {
+  id: string
+  project_id: string
+  email: string
+  role: string
+  invited_by: string | null
+  created_at: string
+}
+
 // ─── Other tables ─────────────────────────────────────────────────────────────
 
 export type ShareScope = {
@@ -233,6 +242,12 @@ export type Database = {
         Row: TaskHistory
         Insert: Omit<TaskHistory, 'id' | 'server_timestamp'>
         Update: Record<string, never>
+        Relationships: []
+      }
+      pending_invites: {
+        Row: PendingInvite
+        Insert: Omit<PendingInvite, 'id' | 'created_at'>
+        Update: Partial<Pick<PendingInvite, 'role'>>
         Relationships: []
       }
     }

@@ -72,7 +72,27 @@ export async function POST(req: NextRequest) {
       p_role: body.role,
     })
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      // If the user doesn't exist yet, store a pending invite instead
+      if (error.message === 'User not found') {
+        const { error: pendingError } = await supabase
+          .from('pending_invites')
+          .insert({
+            project_id: body.project_id,
+            email: body.email,
+            role: body.role,
+            invited_by: user.id,
+          })
+        if (pendingError) {
+          return NextResponse.json(
+            { error: `Failed to store pending invite: ${pendingError.message}` },
+            { status: 500 }
+          )
+        }
+        return NextResponse.json({ pending: true }, { status: 201 })
+      }
+      throw new Error(error.message)
+    }
 
     return NextResponse.json({ data }, { status: 201 })
   } catch (err) {
