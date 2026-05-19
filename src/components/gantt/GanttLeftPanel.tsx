@@ -304,6 +304,16 @@ interface TaskRowProps {
   onWbsClick: (taskId: string, e: React.MouseEvent) => void
   onWbsMouseDown: (taskId: string, e: React.MouseEvent) => void
   onWbsMouseEnter: (taskId: string) => void
+  // 隠しinput関連 (名前列IME対応)
+  onHiddenInputRef?: (el: HTMLInputElement | null, taskId: string, col: GanttColKey) => void
+  compositionText?: string   // IME合成中テキスト（選択セルのみ）
+  confirmedText?: string     // 確定済み編集テキスト（選択セルのみ）
+  onHiddenInputCompositionStart?: (taskId: string, col: GanttColKey) => void
+  onHiddenInputCompositionUpdate?: (taskId: string, col: GanttColKey, text: string) => void
+  onHiddenInputCompositionEnd?: (taskId: string, col: GanttColKey, text: string) => void
+  onHiddenInputChange?: (taskId: string, col: GanttColKey, value: string) => void
+  onHiddenInputKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>, taskId: string, col: GanttColKey) => void
+  onHiddenInputBlur?: (taskId: string, col: GanttColKey) => void
 }
 
 function TaskRow({
@@ -336,6 +346,15 @@ function TaskRow({
   onWbsClick,
   onWbsMouseDown,
   onWbsMouseEnter,
+  onHiddenInputRef,
+  compositionText,
+  confirmedText,
+  onHiddenInputCompositionStart,
+  onHiddenInputCompositionUpdate,
+  onHiddenInputCompositionEnd,
+  onHiddenInputChange,
+  onHiddenInputKeyDown,
+  onHiddenInputBlur,
 }: TaskRowProps) {
   const baseRowBg = isSelected
     ? 'bg-indigo-100'
@@ -401,6 +420,7 @@ function TaskRow({
               height: '100%',
               paddingLeft: colIdx === 0 ? 8 + indentPx : 8,
               paddingRight: 8,
+              position: col === 'name' ? 'relative' : undefined,
             }}
             onMouseDown={(e) => {
               if (col === 'updated_at') return
@@ -448,15 +468,58 @@ function TaskRow({
                   onKeyDown(e, task, col)
                 }}
                 className="w-full text-xs bg-transparent border-none outline-none"
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const input = e.currentTarget
+                  // 全選択状態でクリックされたらカーソルを末尾に移動（矢印キーと同じ挙動）
+                  if (input.selectionStart === 0 && input.selectionEnd === input.value.length && input.value.length > 0) {
+                    requestAnimationFrame(() => {
+                      input.setSelectionRange(input.value.length, input.value.length)
+                    })
+                  }
+                }}
               />
             ) : (
-              <span
-                className={`text-xs w-full ${wrapText ? 'whitespace-normal break-words' : 'truncate'}`}
-                style={{ color: cellCutCols?.has(col) ? '#94a3b8' : undefined }}
-              >
-                {getDisplayValue(task, col)}
-              </span>
+              <>
+                {/* 表示span（isSelected時は合成テキストを重ねて表示） */}
+                <span
+                  className={`text-xs w-full ${wrapText ? 'whitespace-normal break-words' : 'truncate'}`}
+                  style={{ color: cellCutCols?.has(col) ? '#94a3b8' : undefined }}
+                >
+                  {col === 'name' && isSelected_ && (confirmedText !== undefined || compositionText !== undefined)
+                    ? <>{confirmedText ?? getDisplayValue(task, col)}<u>{compositionText}</u></>
+                    : getDisplayValue(task, col)
+                  }
+                </span>
+                {/* 隠しinput（名前列・選択時のみ）: IMEフォーカス管理用 */}
+                {col === 'name' && isSelected_ && onHiddenInputRef && (
+                  <input
+                    ref={(el) => onHiddenInputRef(el, task.id, col)}
+                    defaultValue=""
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: '100%',
+                      opacity: 0,
+                      border: 'none',
+                      outline: 'none',
+                      background: 'transparent',
+                      cursor: 'default',
+                      fontSize: 'inherit',
+                      pointerEvents: 'none',
+                    }}
+                    tabIndex={-1}
+                    onCompositionStart={() => onHiddenInputCompositionStart?.(task.id, col)}
+                    onCompositionUpdate={(e) => onHiddenInputCompositionUpdate?.(task.id, col, e.data)}
+                    onCompositionEnd={(e) => onHiddenInputCompositionEnd?.(task.id, col, e.data)}
+                    onChange={(e) => onHiddenInputChange?.(task.id, col, e.target.value)}
+                    onKeyDown={(e) => onHiddenInputKeyDown?.(e, task.id, col)}
+                    onBlur={() => onHiddenInputBlur?.(task.id, col)}
+                  />
+                )}
+              </>
             )}
           </div>
         )
@@ -737,6 +800,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   // Full set of selected row IDs for multi-select
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
 
+  // ─── 隠しinput IME対応 ──────────────────────────────────────────────────────
+  // IME合成中テキスト（未確定文字）
+  const [compositionText, setCompositionText] = useState('')
+  // 確定済み編集テキスト（合成中に表示用として追跡）
+  const [confirmedText, setConfirmedText] = useState<string | undefined>(undefined)
+  // 隠しinputのrefマップ: "taskId:col" → HTMLInputElement
+  const hiddenInputMapRef = useRef<Map<string, HTMLInputElement>>(new Map())
+  // IME合成中かどうか
+  const isComposingRef = useRef(false)
+
   // Row-level clipboard for Excel-like Ctrl+C/Ctrl+X row copy/cut
   const [rowClipboard, setRowClipboard] = useState<{
     rows: TaskWithBaseline[]
@@ -796,6 +869,25 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   useEffect(() => {
     onSelectedRowChange?.(selectedRowId)
   }, [selectedRowId, onSelectedRowChange])
+
+  // selectedCellが名前列になったら隠しinputにフォーカスを当てる（IME対応）
+  useEffect(() => {
+    if (selectedCell && selectedCell.col === 'name' && !activeCell) {
+      const key = `${selectedCell.taskId}:${selectedCell.col}`
+      const input = hiddenInputMapRef.current.get(key)
+      if (input) {
+        input.value = ''
+        // pointerEventsをnoneにしているのでフォーカスはプログラムから当てる
+        input.style.pointerEvents = 'auto'
+        input.focus({ preventScroll: true })
+        input.style.pointerEvents = 'none'
+      }
+      // 合成状態をリセット
+      setCompositionText('')
+      setConfirmedText(undefined)
+      isComposingRef.current = false
+    }
+  }, [selectedCell, activeCell])
 
   // pushCommand is provided by the parent (GanttChart) which owns the shared undo/redo stack
   const editValueRef = useRef('')
@@ -965,6 +1057,111 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setEditValue(initialValue !== undefined ? initialValue : getRawValue(task, col))
   }, [canEditTask])
 
+  // ─── 隠しinput ハンドラ（名前列IME対応）────────────────────────────────────
+
+  const handleHiddenInputRef = useCallback((el: HTMLInputElement | null, taskId: string, col: GanttColKey) => {
+    const key = `${taskId}:${col}`
+    if (el) {
+      hiddenInputMapRef.current.set(key, el)
+    } else {
+      hiddenInputMapRef.current.delete(key)
+    }
+  }, [])
+
+  const handleHiddenInputCompositionStart = useCallback((_taskId: string, _col: GanttColKey) => {
+    isComposingRef.current = true
+    // 合成開始: 上書きモードのため confirmedText を空にリセット
+    setConfirmedText('')
+  }, [])
+
+  const handleHiddenInputCompositionUpdate = useCallback((_taskId: string, _col: GanttColKey, text: string) => {
+    setCompositionText(text)
+  }, [])
+
+  const handleHiddenInputCompositionEnd = useCallback((taskId: string, col: GanttColKey, text: string) => {
+    isComposingRef.current = false
+    setCompositionText('')
+    if (!text) return
+    // 合成が確定したら編集モードを開始し、確定テキストのみで上書きする
+    const task = tasksRef.current.find((t) => t.id === taskId)
+    if (!task || !canEditTask(task)) return
+    const newValue = text
+    // 隠しinputの値をリセット
+    const key = `${taskId}:${col}`
+    const input = hiddenInputMapRef.current.get(key)
+    if (input) input.value = ''
+    setConfirmedText(undefined)
+    openCell(task, col, newValue)
+  }, [canEditTask, openCell])
+
+  const handleHiddenInputChange = useCallback((taskId: string, col: GanttColKey, value: string) => {
+    // IME合成中でない場合（英数字直接入力）: 編集モードを開始
+    if (isComposingRef.current) return
+    if (!value) return
+    const task = tasksRef.current.find((t) => t.id === taskId)
+    if (!task || !canEditTask(task)) return
+    // 隠しinputの値をリセット
+    const key = `${taskId}:${col}`
+    const input = hiddenInputMapRef.current.get(key)
+    if (input) input.value = ''
+    openCell(task, col, value)
+  }, [canEditTask, openCell])
+
+  const handleHiddenInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, _taskId: string, _col: GanttColKey) => {
+    // IME合成中は何もしない（合成イベントで処理）
+    if (e.nativeEvent.isComposing || isComposingRef.current) {
+      e.stopPropagation()
+      return
+    }
+
+    const isMod = e.ctrlKey || e.metaKey
+
+    // 印字可能文字（修飾なし）: handleGridKeyDownが処理するようにバブルさせる
+    // ただし、バブルするとhandleGridKeyDownのprintableキー処理で openCell が呼ばれる
+    // → ここでは何もしない（stopPropagationしない）
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // バブルをストップして自分でopenCellを呼ぶ（onChange経由で処理される）
+      // onChangeがfireするので、ここでは特に何もしない
+      // ただしgridKeyDownへのバブルは防ぐ
+      e.stopPropagation()
+      return
+    }
+
+    // Cmd+X/C/V, 矢印/Tab/Enter/Escape/Delete等はgridへ委譲
+    const delegateKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Escape', 'Delete', 'Backspace', 'F2', 'PageUp', 'PageDown']
+    if (delegateKeys.includes(e.key) || (isMod && (e.key === 'c' || e.key === 'x' || e.key === 'v'))) {
+      // バブルをストップしてからgridElに直接ディスパッチ（二重発火を防ぐ）
+      e.stopPropagation()
+      e.preventDefault()
+      const gridEl = gridRef.current
+      if (gridEl) {
+        gridEl.focus({ preventScroll: true })
+        const syntheticEvent = new KeyboardEvent('keydown', {
+          key: e.key,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          bubbles: true,
+          cancelable: true,
+        })
+        gridEl.dispatchEvent(syntheticEvent)
+      }
+      return
+    }
+
+    // その他のキーはバブルを止めるだけ
+    e.stopPropagation()
+  }, [])
+
+  const handleHiddenInputBlur = useCallback((_taskId: string, _col: GanttColKey) => {
+    // 合成中のblurは無視（IMEウィンドウが原因）
+    if (isComposingRef.current) return
+    // blurしてもselectedCellは維持（grid focusが移っただけ）
+    setCompositionText('')
+    setConfirmedText(undefined)
+  }, [])
+
   // commitEditWithValues: core save logic that reads cell + value from explicit arguments
   // so it can be called from both the state-based commitEdit and the ref-based path.
   const commitEditWithValues = useCallback(async (
@@ -1126,12 +1323,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
               setSelectedCell({ taskId: nextTask.id, col })
               setSelectedRowId(nextTask.id)
               setSelectedRowIds(new Set([nextTask.id]))
+              gridRef.current?.focus()
             }, 0)
           }
         } else {
           setTimeout(() => {
             setEditingEmptyRowIndex(0)
             setEmptyRowValue('')
+            gridRef.current?.focus()
           }, 0)
         }
       })
@@ -2586,8 +2785,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    const taskIdx = tasks.findIndex((t) => t.id === selectedCell.taskId)
-    const task = tasks[taskIdx]
+    const orderedIds = displayedTaskIdsRef.current
+    const taskIdx = orderedIds.indexOf(selectedCell.taskId)
+    const task = tasks.find((t) => t.id === selectedCell.taskId)
     if (!task) return
 
     const colIdx = editableCols_.indexOf(selectedCell.col)
@@ -2614,13 +2814,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // Ctrl+Home: jump to first task row, first editable column
     if (isMod && e.key === 'Home') {
       e.preventDefault()
-      if (tasks.length > 0 && editableCols_.length > 0) {
-        const firstTask = tasks[0]
-        setSelectedCell({ taskId: firstTask.id, col: editableCols_[0] })
-        setSelectedRowId(firstTask.id)
-        setSelectedRowIds(new Set([firstTask.id]))
-        setSelectionAnchor(null)
-        setSelectionHead(null)
+      if (orderedIds.length > 0 && editableCols_.length > 0) {
+        const firstId = orderedIds[0]
+        const firstTask = tasks.find((t) => t.id === firstId)
+        if (firstTask) {
+          setSelectedCell({ taskId: firstTask.id, col: editableCols_[0] })
+          setSelectedRowId(firstTask.id)
+          setSelectedRowIds(new Set([firstTask.id]))
+          setSelectionAnchor(null)
+          setSelectionHead(null)
+        }
       }
       return
     }
@@ -2628,13 +2831,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // Ctrl+End: jump to last task row, last editable column
     if (isMod && e.key === 'End') {
       e.preventDefault()
-      if (tasks.length > 0 && editableCols_.length > 0) {
-        const lastTask = tasks[tasks.length - 1]
-        setSelectedCell({ taskId: lastTask.id, col: editableCols_[editableCols_.length - 1] })
-        setSelectedRowId(lastTask.id)
-        setSelectedRowIds(new Set([lastTask.id]))
-        setSelectionAnchor(null)
-        setSelectionHead(null)
+      if (orderedIds.length > 0 && editableCols_.length > 0) {
+        const lastId = orderedIds[orderedIds.length - 1]
+        const lastTask = tasks.find((t) => t.id === lastId)
+        if (lastTask) {
+          setSelectedCell({ taskId: lastTask.id, col: editableCols_[editableCols_.length - 1] })
+          setSelectedRowId(lastTask.id)
+          setSelectedRowIds(new Set([lastTask.id]))
+          setSelectionAnchor(null)
+          setSelectionHead(null)
+        }
       }
       return
     }
@@ -2651,11 +2857,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         e.preventDefault()
         setSelectionAnchor(null)
         setSelectionHead(null)
-        if (taskIdx < tasks.length - 1) {
-          const nextTask = tasks[taskIdx + 1]
-          setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
-          setSelectedRowId(nextTask.id)
-          setSelectedRowIds(new Set([nextTask.id]))
+        if (taskIdx < orderedIds.length - 1) {
+          const nextTaskId = orderedIds[taskIdx + 1]
+          const nextTask = tasks.find((t) => t.id === nextTaskId)
+          if (nextTask) {
+            setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
+            setSelectedRowId(nextTask.id)
+            setSelectedRowIds(new Set([nextTask.id]))
+          }
         } else if (emptyRowCountRef.current > 0) {
           // 最終タスク行 → 最初の空白行へ
           setSelectedCell(null)
@@ -2671,19 +2880,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           // Shift+Arrow: expand range selection without moving selectedCell
           const anchor = selectionAnchor ?? selectedCell
           const currentHead = selectionHead ?? selectedCell
-          const headTaskIdx = tasks.findIndex((t) => t.id === currentHead.taskId)
+          const headTaskIdx = orderedIds.indexOf(currentHead.taskId)
           const newHeadTaskIdx = Math.max(0, headTaskIdx - 1)
           setSelectionAnchor(anchor)
-          setSelectionHead({ taskId: tasks[newHeadTaskIdx].id, col: currentHead.col })
+          setSelectionHead({ taskId: orderedIds[newHeadTaskIdx], col: currentHead.col })
           return
         }
         setSelectionAnchor(null)
         setSelectionHead(null)
         if (taskIdx > 0) {
-          const prevTask = tasks[taskIdx - 1]
-          setSelectedCell({ taskId: prevTask.id, col: selectedCell.col })
-          setSelectedRowId(prevTask.id)
-          setSelectedRowIds(new Set([prevTask.id]))
+          const prevTaskId = orderedIds[taskIdx - 1]
+          const prevTask = tasks.find((t) => t.id === prevTaskId)
+          if (prevTask) {
+            setSelectedCell({ taskId: prevTask.id, col: selectedCell.col })
+            setSelectedRowId(prevTask.id)
+            setSelectedRowIds(new Set([prevTask.id]))
+          }
         }
         return
       }
@@ -2692,19 +2904,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         if (e.shiftKey) {
           const anchor = selectionAnchor ?? selectedCell
           const currentHead = selectionHead ?? selectedCell
-          const headTaskIdx = tasks.findIndex((t) => t.id === currentHead.taskId)
-          const newHeadTaskIdx = Math.min(tasks.length - 1, headTaskIdx + 1)
+          const headTaskIdx = orderedIds.indexOf(currentHead.taskId)
+          const newHeadTaskIdx = Math.min(orderedIds.length - 1, headTaskIdx + 1)
           setSelectionAnchor(anchor)
-          setSelectionHead({ taskId: tasks[newHeadTaskIdx].id, col: currentHead.col })
+          setSelectionHead({ taskId: orderedIds[newHeadTaskIdx], col: currentHead.col })
           return
         }
         setSelectionAnchor(null)
         setSelectionHead(null)
-        if (taskIdx < tasks.length - 1) {
-          const nextTask = tasks[taskIdx + 1]
-          setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
-          setSelectedRowId(nextTask.id)
-          setSelectedRowIds(new Set([nextTask.id]))
+        if (taskIdx < orderedIds.length - 1) {
+          const nextTaskId = orderedIds[taskIdx + 1]
+          const nextTask = tasks.find((t) => t.id === nextTaskId)
+          if (nextTask) {
+            setSelectedCell({ taskId: nextTask.id, col: selectedCell.col })
+            setSelectedRowId(nextTask.id)
+            setSelectedRowIds(new Set([nextTask.id]))
+          }
         } else if (emptyRowCountRef.current > 0) {
           // Move from the last task row into the first empty row; clear task selection highlight
           setSelectedCell(null)
@@ -2999,6 +3214,15 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 onWbsClick={handleTaskWbsClick}
                 onWbsMouseDown={handleWbsMouseDown}
                 onWbsMouseEnter={handleWbsMouseEnter}
+                onHiddenInputRef={handleHiddenInputRef}
+                compositionText={selectedCell?.taskId === task.id && selectedCell?.col === 'name' ? compositionText : undefined}
+                confirmedText={selectedCell?.taskId === task.id && selectedCell?.col === 'name' ? confirmedText : undefined}
+                onHiddenInputCompositionStart={handleHiddenInputCompositionStart}
+                onHiddenInputCompositionUpdate={handleHiddenInputCompositionUpdate}
+                onHiddenInputCompositionEnd={handleHiddenInputCompositionEnd}
+                onHiddenInputChange={handleHiddenInputChange}
+                onHiddenInputKeyDown={handleHiddenInputKeyDown}
+                onHiddenInputBlur={handleHiddenInputBlur}
               />
             )
           })}
