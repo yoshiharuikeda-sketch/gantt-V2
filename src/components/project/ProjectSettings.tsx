@@ -39,7 +39,7 @@ interface ProjectSettingsProps {
 
 // ロールは招待フォームで選択可能なものに制限する
 const INTERNAL_ROLES: UserRole[] = ['editor', 'viewer']
-const CHANGEABLE_ROLES: UserRole[] = ['editor', 'viewer']
+const CHANGEABLE_ROLES: UserRole[] = ['owner', 'editor', 'viewer']
 
 const ROLE_LABELS: Record<UserRole, string> = {
   owner: 'オーナー',
