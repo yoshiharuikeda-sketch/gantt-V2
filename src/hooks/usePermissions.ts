@@ -9,6 +9,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canDelete: false,
   canManageMembers: false,
   canCreateSnapshot: false,
+  canAccessSettings: false,
   isVendor: false,
   visibleTaskIds: null,
 }

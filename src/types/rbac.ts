@@ -36,6 +36,7 @@ export function derivePermissions(
     canDelete: role === 'owner',
     canManageMembers: role === 'owner',
     canCreateSnapshot: role === 'owner' || role === 'editor',
+    canAccessSettings: role === 'owner' || role === 'editor',
     isVendor,
     // ベンダーはスコープ未設定（null）でも全タスク閲覧を防ぐため空 Set を返す。
     // null はベンダー以外の「フィルタなし」を意味する。

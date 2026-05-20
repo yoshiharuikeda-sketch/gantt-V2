@@ -50,6 +50,7 @@ export type UserPermissions = {
   canDelete: boolean
   canManageMembers: boolean
   canCreateSnapshot: boolean
+  canAccessSettings: boolean
   isVendor: boolean
   visibleTaskIds: Set<string> | null
 }

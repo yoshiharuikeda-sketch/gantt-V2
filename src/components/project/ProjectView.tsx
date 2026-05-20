@@ -166,7 +166,7 @@ export function ProjectView({
               版管理
             </Link>
           )}
-          {permissions?.canManageMembers && (
+          {permissions?.canAccessSettings && (
             <Link
               href={`/projects/${project.id}/settings`}
               className="flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors"
