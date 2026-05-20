@@ -40,7 +40,7 @@ export async function getProjectWithMembers(
       *,
       project_members(
         *,
-        profiles(*)
+        profiles!left(*)
       )
     `)
     .eq('id', projectId)
