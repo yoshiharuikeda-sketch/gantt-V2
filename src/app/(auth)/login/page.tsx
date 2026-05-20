@@ -41,8 +41,7 @@ function LoginForm() {
     }
 
     const next = searchParams.get('next') ?? '/'
-    router.refresh()
-    router.push(next)
+    window.location.href = next
   }
 
   async function handleResetPassword(e: React.FormEvent) {
