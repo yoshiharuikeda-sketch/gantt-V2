@@ -3,6 +3,8 @@ import { ProjectList } from '@/components/dashboard/ProjectList'
 import { CreateProjectDialog } from '@/components/dashboard/CreateProjectDialog'
 import type { Project } from '@/types/database'
 
+export const dynamic = 'force-dynamic'
+
 export default async function DashboardPage() {
   const supabase = await createClient()
 
@@ -13,18 +15,22 @@ export default async function DashboardPage() {
   let projects: Project[] = []
 
   if (user) {
-    const { data: memberRows } = await supabase
+    const { data: memberRows, error: memberError } = await supabase
       .from('project_members')
       .select('project_id')
       .eq('user_id', user.id)
 
+    console.log('[DashboardPage] userId:', user.id, 'memberRows:', memberRows, 'error:', memberError)
+
     if (memberRows && memberRows.length > 0) {
       const projectIds = memberRows.map((r) => r.project_id)
-      const { data: projectRows } = await supabase
+      const { data: projectRows, error: projectError } = await supabase
         .from('projects')
         .select('*')
         .in('id', projectIds)
         .order('updated_at', { ascending: false })
+
+      console.log('[DashboardPage] projectRows:', projectRows, 'error:', projectError)
 
       if (projectRows) {
         projects = projectRows
