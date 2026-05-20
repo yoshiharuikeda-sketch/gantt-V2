@@ -39,8 +39,8 @@ export default async function ProjectSettingsPage({
 
   const permissions = derivePermissions(role, vendorPhaseIds, tasks as Task[])
 
-  // メンバー管理権限がないユーザーはガントビューにリダイレクト
-  if (!permissions.canManageMembers) {
+  // viewer / limited_viewer / vendor はガントビューにリダイレクト（editor と owner は閲覧可）
+  if (role === 'viewer' || role === 'limited_viewer' || role === 'vendor') {
     redirect(`/projects/${projectId}`)
   }
 
