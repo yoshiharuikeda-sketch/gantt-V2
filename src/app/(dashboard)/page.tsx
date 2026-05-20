@@ -20,16 +20,22 @@ export default async function DashboardPage() {
       .select('project_id')
       .eq('user_id', user.id)
 
+    let projectRows: Project[] | null = null
+    let projectError: unknown = null
+
     if (memberRows && memberRows.length > 0) {
       const projectIds = memberRows.map((r) => r.project_id)
-      const { data: projectRows } = await supabase
+      const { data, error } = await supabase
         .from('projects')
         .select('*')
         .in('id', projectIds)
         .order('updated_at', { ascending: false })
 
-      if (projectRows) {
-        projects = projectRows
+      projectRows = data
+      projectError = error
+
+      if (data) {
+        projects = data
       }
     }
 
@@ -41,6 +47,8 @@ export default async function DashboardPage() {
           <p>email: {user.email}</p>
           <p>memberRows: {JSON.stringify(memberRows)}</p>
           <p>memberError: {JSON.stringify(memberError)}</p>
+          <p>projectRows: {JSON.stringify(projectRows)}</p>
+          <p>projectError: {JSON.stringify(projectError)}</p>
         </div>
       )
     }
