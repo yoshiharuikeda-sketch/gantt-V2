@@ -49,6 +49,7 @@ export type UserPermissions = {
   canEdit: boolean
   canDelete: boolean
   canManageMembers: boolean
+  canInviteMembers: boolean
   canCreateSnapshot: boolean
   canAccessSettings: boolean
   isVendor: boolean

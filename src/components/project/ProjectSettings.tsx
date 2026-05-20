@@ -392,7 +392,7 @@ export function ProjectSettings({
         <TabsList>
           <TabsTrigger value="info">基本情報</TabsTrigger>
           <TabsTrigger value="members">メンバー管理</TabsTrigger>
-          {permissions.canManageMembers && (
+          {permissions.canInviteMembers && (
             <TabsTrigger value="vendors">ベンダー管理</TabsTrigger>
           )}
         </TabsList>
@@ -556,8 +556,8 @@ export function ProjectSettings({
               </table>
             </div>
 
-            {/* 招待フォーム（オーナーのみ） */}
-            {permissions.canManageMembers && (
+            {/* 招待フォーム（オーナー・編集者） */}
+            {permissions.canInviteMembers && (
               <div className="space-y-4">
                 {/* 社内メンバー招待 */}
                 <div className="border rounded-lg p-4 space-y-3">
@@ -795,7 +795,7 @@ export function ProjectSettings({
         </TabsContent>
 
         {/* ベンダー管理タブ */}
-        {permissions.canManageMembers && (
+        {permissions.canInviteMembers && (
           <TabsContent value="vendors">
             <div className="space-y-8 mt-4">
               {/* タスクへのベンダー割当 */}

@@ -8,6 +8,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canEdit: false,
   canDelete: false,
   canManageMembers: false,
+  canInviteMembers: false,
   canCreateSnapshot: false,
   canAccessSettings: false,
   isVendor: false,

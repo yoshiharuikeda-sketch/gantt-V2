@@ -35,6 +35,7 @@ export function derivePermissions(
     canEdit: role === 'owner' || role === 'editor' || isVendor,
     canDelete: role === 'owner',
     canManageMembers: role === 'owner',
+    canInviteMembers: role === 'owner' || role === 'editor',
     canCreateSnapshot: role === 'owner' || role === 'editor',
     canAccessSettings: role === 'owner' || role === 'editor',
     isVendor,
