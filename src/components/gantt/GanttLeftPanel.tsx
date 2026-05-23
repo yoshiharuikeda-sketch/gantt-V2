@@ -1736,6 +1736,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
 
     // フェーズ名でタスクを新規作成（末尾に追加）
+    // Use tasks prop (stable, passed from parent) for display_order to avoid stale closure issues
     const taskRes = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1745,31 +1746,19 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         name: phase.name,
         status: 'not_started',
         progress: 0,
-        display_order: storeTasks.length,
+        display_order: tasks.length,
       }),
     })
     if (taskRes.ok) {
       const { data: newTask } = await taskRes.json() as { data: Task }
       upsertTask(newTask)
 
-      // reorderTasks を呼んで WBS 番号を再計算させ、Gantt 行を正しく整列する
-      // 新タスクは末尾に追加されているので既存タスクの後に配置する
-      // storeTasks はまだ新タスクを含まないため、明示的に末尾に追加する
-      const existingIds = storeTasks.map((t) => t.id).filter((id) => id !== newTask.id)
-      const allIds = [...existingIds, newTask.id]
-      const reorderItems = allIds.map((id, index) => ({ id, display_order: index }))
-      try {
-        await fetch('/api/tasks/reorder', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectId: currentProject.id, items: reorderItems }),
-        })
-      } catch (err) {
-        console.error('Failed to reorder after convertPhaseToTask:', err)
-      }
+      // Update store order so WBS numbers are recalculated correctly.
+      // Use tasks prop (not storeTasks) to avoid stale closure; append new task at the end.
+      const allIds = [...tasks.map((t) => t.id), newTask.id]
       reorderTasks(allIds)
     }
-  }, [phases, tasks, currentProject, storeTasks, upsertTask, removePhase, upsertPhase, reorderTasks])
+  }, [phases, tasks, currentProject, upsertTask, removePhase, upsertPhase, reorderTasks])
 
   // ─── WBS drag-selection ──────────────────────────────────────────────────────
 
@@ -1987,7 +1976,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     // Use the visual display order (displayedTaskIdsRef) so pasted rows appear
     // in the correct Gantt chart row position, matching the on-screen order.
-    const visualIds = displayedTaskIdsRef.current
+    // If the ref is stale or partial (e.g. due to filtering), fall back to the tasks prop
+    // to ensure the full reorder list always matches tasks.length, preventing row desync.
+    const visualIds = displayedTaskIdsRef.current.length === tasks.length
+      ? displayedTaskIdsRef.current
+      : tasks.map((t) => t.id)
 
     // Determine insertion index based on visual order
     const targetIdx = visualIds.indexOf(targetTaskId)
@@ -2179,8 +2172,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const success = await deleteSingleRow(taskId)
     if (!success) return
 
-    // Build the new ordered list from the visual order, excluding the deleted task
-    const remainingIds = displayedTaskIdsRef.current.filter((id) => id !== taskId)
+    // Build the new ordered list from the visual order, excluding the deleted task.
+    // Fall back to tasks prop if the ref is stale or partial to prevent row desync.
+    const baseIds = displayedTaskIdsRef.current.length === tasks.length
+      ? displayedTaskIdsRef.current
+      : tasks.map((t) => t.id)
+    const remainingIds = baseIds.filter((id) => id !== taskId)
     const items = remainingIds.map((id, index) => ({ id, display_order: index }))
 
     try {
@@ -2205,7 +2202,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     })
     setSelectionAnchor(null)
     setSelectionHead(null)
-  }, [currentProject, deleteSingleRow, reorderTasks])
+  }, [currentProject, tasks, deleteSingleRow, reorderTasks])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -2848,15 +2845,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
       // Printable key → open edit mode on the empty row
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // IME入力（isComposing または 'Process' キー）の場合は preventDefault しない
+        // そうしないとIMEが最初の文字を受け取れず、変換が壊れる
+        if (e.nativeEvent.isComposing || e.key === 'Process') {
+          setEditingEmptyRowIndex(rowIndex)
+          setEmptyRowValue('')
+          return
+        }
         e.preventDefault()
         setEditingEmptyRowIndex(rowIndex)
-        // IME入力（isComposing または 'Process' キー）の場合は空で開く
-        // そうしないと最初の文字がIMEに渡る前に確定してしまう
-        if (e.nativeEvent.isComposing || e.key === 'Process') {
-          setEmptyRowValue('')
-        } else {
-          setEmptyRowValue(e.key)
-        }
+        setEmptyRowValue(e.key)
         return
       }
       return
@@ -3480,11 +3478,20 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           onDelete={() => {
             const taskId = contextMenu.taskId
             closeContextMenu()
-            // Reset selection refs so deleteRow deletes only the right-clicked task
-            selectionRangeRef.current = null
-            selectedRowIdsRef.current = new Set([taskId])
-            selectedRowIdRef.current = taskId
-            void deleteRow(taskId)
+            // Call deleteSingleRow directly to bypass multi-selection logic entirely,
+            // ensuring the right-clicked task is always the one deleted.
+            void deleteSingleRow(taskId).then((success) => {
+              if (success) {
+                setSelectedRowId((prev) => prev === taskId ? null : prev)
+                setSelectedRowIds((prev) => {
+                  const next = new Set(prev)
+                  next.delete(taskId)
+                  return next
+                })
+                setSelectionAnchor(null)
+                setSelectionHead(null)
+              }
+            })
           }}
           onDeleteRow={() => {
             const taskId = contextMenu.taskId
