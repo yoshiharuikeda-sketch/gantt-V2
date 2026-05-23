@@ -571,6 +571,8 @@ interface EmptyRowProps {
   onDoubleClick: () => void
   onCellClick: (col: GanttColKey) => void
   onContextMenu: (e: React.MouseEvent) => void
+  onCompositionStart?: () => void
+  onCompositionEnd?: () => void
 }
 
 function EmptyRow({
@@ -587,6 +589,8 @@ function EmptyRow({
   onDoubleClick,
   onCellClick,
   onContextMenu,
+  onCompositionStart,
+  onCompositionEnd,
 }: EmptyRowProps) {
   const baseRowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'
 
@@ -639,8 +643,12 @@ function EmptyRow({
                 onBlur={onCommit}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') { e.preventDefault(); onCancel(); return }
+                  // IME変換確定直後のEnterはコミットしない（compositionend直後のEnter）
+                  if (e.nativeEvent.isComposing) return
                   if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); onCommit(); return }
                 }}
+                onCompositionStart={onCompositionStart}
+                onCompositionEnd={onCompositionEnd}
                 className="w-full text-xs bg-transparent border-none outline-none"
                 onClick={(e) => e.stopPropagation()}
               />
@@ -668,6 +676,7 @@ interface ContextMenuProps {
   onPasteAbove: () => void
   onPasteBelow: () => void
   onDelete: () => void
+  onDeleteRow?: () => void
 }
 
 function ContextMenu({
@@ -684,6 +693,7 @@ function ContextMenu({
   onPasteAbove,
   onPasteBelow,
   onDelete,
+  onDeleteRow,
 }: ContextMenuProps) {
   type MenuItem = {
     label: string
@@ -691,6 +701,7 @@ function ContextMenu({
     onClick: () => void
     disabled: boolean
     dividerAfter?: boolean
+    dividerBefore?: boolean
   }
 
   const menuItems: MenuItem[] = []
@@ -711,6 +722,7 @@ function ContextMenu({
     { label: '切り取り', shortcut: 'Ctrl+X', onClick: onCut, disabled: !canEdit },
     { label: '貼り付け', shortcut: 'Ctrl+V', onClick: onPaste, disabled: false },
     { label: '削除', shortcut: 'Delete', onClick: onDelete, disabled: !canEdit },
+    { label: '行を削除', onClick: onDeleteRow ?? onDelete, disabled: !canEdit || !onDeleteRow, dividerBefore: true },
   )
 
   return (
@@ -722,6 +734,9 @@ function ContextMenu({
     >
       {menuItems.map((item, i) => (
         <React.Fragment key={i}>
+          {item.dividerBefore && (
+            <div className="border-t border-slate-100 my-1" />
+          )}
           <button
             disabled={item.disabled}
             onClick={item.onClick}
@@ -1736,8 +1751,25 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     if (taskRes.ok) {
       const { data: newTask } = await taskRes.json() as { data: Task }
       upsertTask(newTask)
+
+      // reorderTasks を呼んで WBS 番号を再計算させ、Gantt 行を正しく整列する
+      // 新タスクは末尾に追加されているので既存タスクの後に配置する
+      // storeTasks はまだ新タスクを含まないため、明示的に末尾に追加する
+      const existingIds = storeTasks.map((t) => t.id).filter((id) => id !== newTask.id)
+      const allIds = [...existingIds, newTask.id]
+      const reorderItems = allIds.map((id, index) => ({ id, display_order: index }))
+      try {
+        await fetch('/api/tasks/reorder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId: currentProject.id, items: reorderItems }),
+        })
+      } catch (err) {
+        console.error('Failed to reorder after convertPhaseToTask:', err)
+      }
+      reorderTasks(allIds)
     }
-  }, [phases, tasks, currentProject, storeTasks.length, upsertTask, removePhase, upsertPhase])
+  }, [phases, tasks, currentProject, storeTasks, upsertTask, removePhase, upsertPhase, reorderTasks])
 
   // ─── WBS drag-selection ──────────────────────────────────────────────────────
 
@@ -1953,11 +1985,15 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     if (!targetTask) return
     const targetPhaseId = targetTask.phase_id
 
-    // Determine insertion index
-    const targetIdx = tasks.findIndex((t) => t.id === targetTaskId)
+    // Use the visual display order (displayedTaskIdsRef) so pasted rows appear
+    // in the correct Gantt chart row position, matching the on-screen order.
+    const visualIds = displayedTaskIdsRef.current
+
+    // Determine insertion index based on visual order
+    const targetIdx = visualIds.indexOf(targetTaskId)
     const insertAt = position === 'above'
       ? (targetIdx >= 0 ? targetIdx : 0)
-      : (targetIdx >= 0 ? targetIdx + 1 : tasks.length)
+      : (targetIdx >= 0 ? targetIdx + 1 : visualIds.length)
 
     if (mode === 'copy') {
       // POST new tasks for each row (in order)
@@ -1994,8 +2030,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
       if (createdIds.length === 0) return
 
-      // Splice all new tasks at insertAt position
-      const orderedIds = tasks.map((t) => t.id)
+      // Splice all new tasks at insertAt position using the visual order
+      const orderedIds = [...visualIds]
       orderedIds.splice(insertAt, 0, ...createdIds)
       const items = orderedIds.map((id, index) => ({ id, display_order: index }))
 
@@ -2017,8 +2053,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       // Cut mode: move tasks by updating phase_id and display_order
       const srcIds = taskRows.map((t) => t.id)
 
-      // Optimistic update: remove src rows from current position, insert at target
-      const baseIds = tasks.map((t) => t.id).filter((id) => !srcIds.includes(id))
+      // Use the visual display order for cut-paste too so Gantt rows stay aligned
+      const baseIds = [...visualIds].filter((id) => !srcIds.includes(id))
       const targetIdxInBase = baseIds.findIndex((id) => id === targetTaskId)
       const splicePos = position === 'above'
         ? (targetIdxInBase >= 0 ? targetIdxInBase : 0)
@@ -2047,7 +2083,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           for (const srcTask of taskRows) {
             upsertTask(srcTask as Task)
           }
-          reorderTasks(tasks.map((t) => t.id))
+          reorderTasks(visualIds)
           return
         }
 
@@ -2134,6 +2170,42 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setSelectionAnchor(null)
     setSelectionHead(null)
   }, [deleteSingleRow])
+
+  // deleteRowWithReorder: "行を削除" — deletes the task AND reorders remaining tasks
+  // to compact display_order values (no gaps), unlike deleteRow which leaves gaps.
+  const deleteRowWithReorder = useCallback(async (taskId: string) => {
+    if (!currentProject) return
+
+    const success = await deleteSingleRow(taskId)
+    if (!success) return
+
+    // Build the new ordered list from the visual order, excluding the deleted task
+    const remainingIds = displayedTaskIdsRef.current.filter((id) => id !== taskId)
+    const items = remainingIds.map((id, index) => ({ id, display_order: index }))
+
+    try {
+      await fetch('/api/tasks/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: currentProject.id, items }),
+      })
+    } catch (err) {
+      console.error('Failed to reorder after deleteRowWithReorder:', err)
+    }
+
+    reorderTasks(remainingIds)
+
+    if (taskId === selectedRowIdRef.current) {
+      setSelectedRowId(null)
+    }
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev)
+      next.delete(taskId)
+      return next
+    })
+    setSelectionAnchor(null)
+    setSelectionHead(null)
+  }, [currentProject, deleteSingleRow, reorderTasks])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -2614,6 +2686,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     if (!selectedRowIds.has(taskId)) {
       setSelectedRowId(taskId)
       setSelectedRowIds(new Set([taskId]))
+      // Clear any cell drag-selection so deleteRow uses the right-clicked task
+      setSelectionAnchor(null)
+      setSelectionHead(null)
     }
     setContextMenu({ x: e.clientX, y: e.clientY, taskId })
   }, [selectedRowIds])
@@ -2775,7 +2850,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault()
         setEditingEmptyRowIndex(rowIndex)
-        setEmptyRowValue(e.key)
+        // IME入力（isComposing または 'Process' キー）の場合は空で開く
+        // そうしないと最初の文字がIMEに渡る前に確定してしまう
+        if (e.nativeEvent.isComposing || e.key === 'Process') {
+          setEmptyRowValue('')
+        } else {
+          setEmptyRowValue(e.key)
+        }
         return
       }
       return
@@ -3310,6 +3391,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                   e.preventDefault()
                   setEmptyRowContextMenu({ x: e.clientX, y: e.clientY, rowIndex: i })
                 }}
+                onCompositionStart={() => { isComposingRef.current = true }}
+                onCompositionEnd={() => { isComposingRef.current = false }}
               />
             ))
           })()}
@@ -3397,7 +3480,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           onDelete={() => {
             const taskId = contextMenu.taskId
             closeContextMenu()
+            // Reset selection refs so deleteRow deletes only the right-clicked task
+            selectionRangeRef.current = null
+            selectedRowIdsRef.current = new Set([taskId])
+            selectedRowIdRef.current = taskId
             void deleteRow(taskId)
+          }}
+          onDeleteRow={() => {
+            const taskId = contextMenu.taskId
+            closeContextMenu()
+            void deleteRowWithReorder(taskId)
           }}
         />
       )}
