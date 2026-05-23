@@ -139,40 +139,63 @@ export function GanttChart() {
     const task = storeTasks.find((t) => t.id === taskId)
     if (!task || !currentProject) return
 
-    // Optimistic delete
+    const originalPhase = task.phase_id ? phases.find((p) => p.id === task.phase_id) : null
+    const origOrder = originalPhase?.display_order ?? -1
+    const newPhaseOrder = origOrder + 1
+
+    const tasksToMove = storeTasks
+      .filter((t) => t.phase_id === task.phase_id && t.id !== taskId && t.display_order > task.display_order)
+
+    const phasesToShift = phases.filter((p) => p.display_order >= newPhaseOrder)
+
     removeTask(taskId)
     setSelectedTaskIdForConversion(null)
+    for (const p of phasesToShift) {
+      upsertPhase({ ...p, display_order: p.display_order + 1 })
+    }
 
-    // Create phase
+    await Promise.all(
+      phasesToShift.map((p) =>
+        fetch('/api/phases', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: p.id, display_order: p.display_order + 1 }),
+        })
+      )
+    )
+
     const phaseRes = await fetch('/api/phases', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_id: currentProject.id,
         name: task.name,
-        display_order: phases.length,
+        display_order: newPhaseOrder,
         color: '#6366F1',
         start_date: null,
         end_date: null,
       }),
     })
-    if (!phaseRes.ok) { upsertTask(task); return }
+    if (!phaseRes.ok) {
+      upsertTask(task)
+      for (const p of phasesToShift) upsertPhase(p)
+      return
+    }
     const { data: newPhase } = await phaseRes.json() as { data: import('@/types').Phase }
     upsertPhase(newPhase)
 
-    // Move child tasks to new phase
-    const childTasks = storeTasks.filter((t) => t.parent_task_id === taskId)
-    await Promise.all(childTasks.map(async (child) => {
-      const updated = { ...child, phase_id: newPhase.id, parent_task_id: null }
-      upsertTask(updated)
-      await fetch('/api/tasks', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: child.id, version: child.version, phase_id: newPhase.id, parent_task_id: null }),
+    await Promise.all(
+      tasksToMove.map(async (t) => {
+        const updated = { ...t, phase_id: newPhase.id }
+        upsertTask(updated)
+        await fetch('/api/tasks', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: t.id, version: t.version, phase_id: newPhase.id }),
+        })
       })
-    }))
+    )
 
-    // Delete original task
     await fetch(`/api/tasks?id=${taskId}`, { method: 'DELETE' })
   }, [storeTasks, currentProject, phases, upsertPhase, upsertTask, removeTask])
 

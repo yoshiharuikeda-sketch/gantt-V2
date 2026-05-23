@@ -920,9 +920,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   // IME合成中かどうか
   const isComposingRef = useRef(false)
 
-  // Tracks task IDs deleted via "削除" (ghost rows — removed from DB but row stays blank in UI)
-  const [deletedTaskIds, setDeletedTaskIds] = useState<ReadonlySet<string>>(new Set())
-
   // Row-level clipboard for Excel-like Ctrl+C/Ctrl+X row copy/cut
   const [rowClipboard, setRowClipboard] = useState<{
     rows: TaskWithBaseline[]
@@ -1161,11 +1158,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   }, [])
 
   const canEditTask = useCallback((task: TaskWithBaseline): boolean => {
-    if (deletedTaskIds.has(task.id)) return false
     if (!permissions) return false
     if (!currentUserId) return permissions.canEdit
     return canVendorEditTask(permissions, task.vendor_id ?? null, currentUserId)
-  }, [permissions, currentUserId, deletedTaskIds])
+  }, [permissions, currentUserId])
 
   const selectCell = useCallback((task: TaskWithBaseline, col: GanttColKey) => {
     if (NON_EDITABLE_COLS.has(col)) return
@@ -2179,24 +2175,35 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
   }, [rowClipboard, currentProject, tasks, upsertTask, reorderTasks])
 
-  // Delete a single task by ID — marks the row as a blank ghost in the UI (row position kept).
-  // Does NOT call removeTask so rows do not compact. "行を削除" uses deleteRowWithReorder instead.
   const deleteSingleRow = useCallback(async (taskId: string): Promise<boolean> => {
+    const task = storeTasks.find((t) => t.id === taskId)
+    if (!task) return false
     try {
-      const res = await fetch(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+      const res = await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: taskId,
+          version: task.version,
+          name: '',
+          start_date: null,
+          end_date: null,
+          progress: 0,
+        }),
+      })
       if (res.ok) {
-        setDeletedTaskIds(prev => new Set([...prev, taskId]))
+        const json = await res.json() as { data: Task }
+        upsertTask(json.data)
         return true
-      } else {
-        const json = await res.json() as { error?: string }
-        console.error('Failed to delete task:', json.error)
-        return false
       }
+      const json = await res.json() as { error?: string }
+      console.error('Failed to clear task:', json.error)
+      return false
     } catch (err) {
-      console.error('Failed to delete task:', err)
+      console.error('Failed to clear task:', err)
       return false
     }
-  }, [])
+  }, [storeTasks, upsertTask])
 
   const deleteRow = useCallback(async (taskId: string) => {
     // Read latest values from refs to avoid stale closures when called from the
@@ -2237,8 +2244,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setSelectionHead(null)
   }, [deleteSingleRow])
 
-  // deleteRowWithReorder: "行を削除" — deletes the task from DB AND removes it from the store,
-  // compacting display_order values. Unlike deleteSingleRow ("削除") which leaves a ghost row.
   const deleteRowWithReorder = useCallback(async (taskId: string) => {
     if (!currentProject) return
 
@@ -2249,16 +2254,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    // Remove from ghost set if it was there, then remove from store
-    setDeletedTaskIds(prev => { const n = new Set(prev); n.delete(taskId); return n })
     removeTask(taskId)
 
-    // Build remaining IDs excluding the deleted task AND any existing ghost-deleted tasks
     const baseIds = displayedTaskIdsRef.current.length > 0
       ? displayedTaskIdsRef.current
       : tasks.map((t) => t.id)
-    const currentDeletedIds = deletedTaskIds
-    const remainingIds = baseIds.filter((id) => id !== taskId && !currentDeletedIds.has(id))
+    const remainingIds = baseIds.filter((id) => id !== taskId)
     const items = remainingIds.map((id, index) => ({ id, display_order: index }))
 
     try {
@@ -2277,7 +2278,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setSelectedRowIds((prev) => { const n = new Set(prev); n.delete(taskId); return n })
     setSelectionAnchor(null)
     setSelectionHead(null)
-  }, [currentProject, tasks, removeTask, reorderTasks, deletedTaskIds])
+  }, [currentProject, tasks, removeTask, reorderTasks])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -3380,21 +3381,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             }
 
             const { task, visualIndex, wbsNumber } = row
-
-            if (deletedTaskIds.has(task.id)) {
-              return (
-                <div key={`deleted-${task.id}`} style={{ height: rowHeight }} className="flex items-center">
-                  <div style={{ width: 36, height: '100%' }} className="flex-shrink-0 border-r border-slate-200" />
-                  {columns.map((col) => (
-                    <div
-                      key={col}
-                      style={{ width: effectiveColWidths[col], height: '100%', paddingLeft: 8, paddingRight: 8 }}
-                      className="flex-shrink-0 flex items-center border-r border-slate-200 border-b border-slate-100"
-                    />
-                  ))}
-                </div>
-              )
-            }
 
             const cutCols = cellCutRect && cellCutRect.rowIds.includes(task.id)
               ? new Set(cellCutRect.cols)
