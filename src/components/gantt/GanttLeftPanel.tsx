@@ -110,6 +110,8 @@ interface GanttLeftPanelProps {
   containerWidth: number
   /** Project members — used to compute vendor-locked phases (phases assigned to a vendor via vendor_phase_ids) */
   members?: MemberWithProfile[]
+  /** Parent ref to also attach to the inner scroll grid so the parent can sync scrollTop */
+  outerScrollRef?: React.RefObject<HTMLDivElement | null>
 }
 
 // ─── PhaseRow ─────────────────────────────────────────────────────────────────
@@ -599,6 +601,7 @@ function EmptyRow({
   // Whether this empty row has a selected name cell (and should show the hidden IME input)
   const isNameSelected = !isEditing && selectedCol === 'name'
   const hiddenInputRef = useRef<HTMLInputElement>(null)
+  const isHiddenComposing = useRef(false)
 
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
@@ -695,12 +698,14 @@ function EmptyRow({
                   pointerEvents: 'none',
                 }}
                 tabIndex={-1}
-                onCompositionStart={() => onCompositionStart?.()}
+                onCompositionStart={() => { isHiddenComposing.current = true; onCompositionStart?.() }}
                 onCompositionEnd={(e) => {
+                  isHiddenComposing.current = false
                   onCompositionEnd?.()
                   if (e.data) onHiddenCompositionEnd?.(e.data)
                 }}
                 onChange={(e) => {
+                  if (isHiddenComposing.current) return
                   // Non-IME direct input (e.g. ASCII): open edit mode with the typed char
                   if (e.target.value) {
                     onHiddenCompositionEnd?.(e.target.value)
@@ -870,7 +875,7 @@ function getDefaultRawValue(col: GanttColKey): string {
   }
 }
 
-export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange, containerWidth, members }: GanttLeftPanelProps) {
+export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCommand, onEditingChange, onSelectedRowChange, containerWidth, members, outerScrollRef }: GanttLeftPanelProps) {
   const currentUserId = useProjectStore((s) => s.currentUserId)
   const currentProject = useProjectStore((s) => s.currentProject)
   const upsertTask = useTaskStore((s) => s.upsertTask)
@@ -914,6 +919,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const hiddenInputMapRef = useRef<Map<string, HTMLInputElement>>(new Map())
   // IME合成中かどうか
   const isComposingRef = useRef(false)
+
+  // Tracks task IDs deleted via "削除" (ghost rows — removed from DB but row stays blank in UI)
+  const [deletedTaskIds, setDeletedTaskIds] = useState<ReadonlySet<string>>(new Set())
 
   // Row-level clipboard for Excel-like Ctrl+C/Ctrl+X row copy/cut
   const [rowClipboard, setRowClipboard] = useState<{
@@ -1153,10 +1161,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   }, [])
 
   const canEditTask = useCallback((task: TaskWithBaseline): boolean => {
+    if (deletedTaskIds.has(task.id)) return false
     if (!permissions) return false
     if (!currentUserId) return permissions.canEdit
     return canVendorEditTask(permissions, task.vendor_id ?? null, currentUserId)
-  }, [permissions, currentUserId])
+  }, [permissions, currentUserId, deletedTaskIds])
 
   const selectCell = useCallback((task: TaskWithBaseline, col: GanttColKey) => {
     if (NON_EDITABLE_COLS.has(col)) return
@@ -2170,12 +2179,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
   }, [rowClipboard, currentProject, tasks, upsertTask, reorderTasks])
 
-  // Delete a single task by ID
+  // Delete a single task by ID — marks the row as a blank ghost in the UI (row position kept).
+  // Does NOT call removeTask so rows do not compact. "行を削除" uses deleteRowWithReorder instead.
   const deleteSingleRow = useCallback(async (taskId: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
       if (res.ok) {
-        removeTask(taskId)
+        setDeletedTaskIds(prev => new Set([...prev, taskId]))
         return true
       } else {
         const json = await res.json() as { error?: string }
@@ -2186,7 +2196,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       console.error('Failed to delete task:', err)
       return false
     }
-  }, [removeTask])
+  }, [])
 
   const deleteRow = useCallback(async (taskId: string) => {
     // Read latest values from refs to avoid stale closures when called from the
@@ -2227,20 +2237,28 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setSelectionHead(null)
   }, [deleteSingleRow])
 
-  // deleteRowWithReorder: "行を削除" — deletes the task AND reorders remaining tasks
-  // to compact display_order values (no gaps), unlike deleteRow which leaves gaps.
+  // deleteRowWithReorder: "行を削除" — deletes the task from DB AND removes it from the store,
+  // compacting display_order values. Unlike deleteSingleRow ("削除") which leaves a ghost row.
   const deleteRowWithReorder = useCallback(async (taskId: string) => {
     if (!currentProject) return
 
-    const success = await deleteSingleRow(taskId)
-    if (!success) return
+    const res = await fetch(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const json = await res.json() as { error?: string }
+      console.error('Failed to delete task:', json.error)
+      return
+    }
 
-    // Build the new ordered list from the visual order, excluding the deleted task.
-    // Fall back to tasks prop if the ref is stale or partial to prevent row desync.
-    const baseIds = displayedTaskIdsRef.current.length === tasks.length
+    // Remove from ghost set if it was there, then remove from store
+    setDeletedTaskIds(prev => { const n = new Set(prev); n.delete(taskId); return n })
+    removeTask(taskId)
+
+    // Build remaining IDs excluding the deleted task AND any existing ghost-deleted tasks
+    const baseIds = displayedTaskIdsRef.current.length > 0
       ? displayedTaskIdsRef.current
       : tasks.map((t) => t.id)
-    const remainingIds = baseIds.filter((id) => id !== taskId)
+    const currentDeletedIds = deletedTaskIds
+    const remainingIds = baseIds.filter((id) => id !== taskId && !currentDeletedIds.has(id))
     const items = remainingIds.map((id, index) => ({ id, display_order: index }))
 
     try {
@@ -2255,17 +2273,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     reorderTasks(remainingIds)
 
-    if (taskId === selectedRowIdRef.current) {
-      setSelectedRowId(null)
-    }
-    setSelectedRowIds((prev) => {
-      const next = new Set(prev)
-      next.delete(taskId)
-      return next
-    })
+    if (taskId === selectedRowIdRef.current) setSelectedRowId(null)
+    setSelectedRowIds((prev) => { const n = new Set(prev); n.delete(taskId); return n })
     setSelectionAnchor(null)
     setSelectionHead(null)
-  }, [currentProject, tasks, deleteSingleRow, reorderTasks])
+  }, [currentProject, tasks, removeTask, reorderTasks, deletedTaskIds])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -3307,7 +3319,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         {/* Rows */}
         {/* tabIndex={0} でフォーカス可能にし、選択中セルへのキーボード操作を受け取る */}
         <div
-          ref={gridRef}
+          ref={(el) => {
+            (gridRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+            if (outerScrollRef) (outerScrollRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+          }}
           className="flex-1 overflow-y-auto overflow-x-hidden outline-none"
           style={{ scrollbarWidth: 'none' }}
           tabIndex={0}
@@ -3365,6 +3380,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             }
 
             const { task, visualIndex, wbsNumber } = row
+
+            if (deletedTaskIds.has(task.id)) {
+              return (
+                <div key={`deleted-${task.id}`} style={{ height: rowHeight }} className="flex items-center">
+                  <div style={{ width: 36, height: '100%' }} className="flex-shrink-0 border-r border-slate-200" />
+                  {columns.map((col) => (
+                    <div
+                      key={col}
+                      style={{ width: effectiveColWidths[col], height: '100%', paddingLeft: 8, paddingRight: 8 }}
+                      className="flex-shrink-0 flex items-center border-r border-slate-200 border-b border-slate-100"
+                    />
+                  ))}
+                </div>
+              )
+            }
+
             const cutCols = cellCutRect && cellCutRect.rowIds.includes(task.id)
               ? new Set(cellCutRect.cols)
               : null

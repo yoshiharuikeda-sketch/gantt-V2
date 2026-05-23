@@ -91,6 +91,10 @@ export function GanttChart() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const leftScrollRef = useRef<HTMLDivElement>(null)
   const leftPanelRef = useRef<HTMLDivElement>(null)
+  // Points to the inner scrollable grid div inside GanttLeftPanel (not the outer container).
+  // The outer container (leftScrollRef) has h-full children and never overflows,
+  // so scroll events only fire on the inner grid — we sync against that instead.
+  const leftGridRef = useRef<HTMLDivElement>(null)
 
   // Panel resize state – persisted to localStorage
   const [leftWidth, setLeftWidth] = useState<number>(() => {
@@ -220,10 +224,13 @@ export function GanttChart() {
     }
   }, [onMouseMove, onMouseUp])
 
-  // Sync vertical scroll
+  // Sync vertical scroll.
+  // leftGridRef points to the inner scrollable div inside GanttLeftPanel (gridRef there).
+  // The outer container (leftScrollRef) never overflows because GanttLeftPanel fills it
+  // with h-full, so scroll events only fire on the inner grid element.
   useEffect(() => {
     const right = scrollRef.current
-    const left = leftScrollRef.current
+    const left = leftGridRef.current
     if (!right || !left) return
 
     const onRightScroll = () => { left.scrollTop = right.scrollTop }
@@ -385,6 +392,7 @@ export function GanttChart() {
             onSelectedRowChange={(id) => setSelectedTaskIdForConversion(id)}
             containerWidth={measuredLeftWidth}
             members={members}
+            outerScrollRef={leftGridRef}
           />
         </div>
 
