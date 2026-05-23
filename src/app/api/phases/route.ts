@@ -130,7 +130,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    // フェーズが属するプロジェクトを取得して owner のみ削除可
+    // フェーズが属するプロジェクトを取得して editor 以上のみ削除可
     const { data: phaseRow, error: phaseFetchError } = await supabase
       .from('phases')
       .select('project_id')
@@ -144,7 +144,7 @@ export async function DELETE(req: NextRequest) {
     const { data: isMember } = await supabase.rpc('is_project_member', {
       p_project_id: phaseRow.project_id,
       p_user_id: user.id,
-      p_roles: ['owner'],
+      p_roles: ['owner', 'editor'],
     })
     if (!isMember) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

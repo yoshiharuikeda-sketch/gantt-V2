@@ -189,14 +189,14 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
 
-    // owner のみ削除可（editor・vendor は owner 相当の権限なし）
-    const { data: isOwner } = await supabase.rpc('is_project_member', {
+    // owner・editor は削除可。vendor は担当タスクのみ削除許可
+    const { data: isEditorOrAbove } = await supabase.rpc('is_project_member', {
       p_project_id: taskRow.project_id,
       p_user_id: user.id,
-      p_roles: ['owner'],
+      p_roles: ['owner', 'editor'],
     })
 
-    if (!isOwner) {
+    if (!isEditorOrAbove) {
       // vendor かどうか確認し、担当タスクのみ削除許可
       const { data: memberRow, error: memberError } = await supabase
         .from('project_members')

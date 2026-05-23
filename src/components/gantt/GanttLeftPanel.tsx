@@ -573,6 +573,8 @@ interface EmptyRowProps {
   onContextMenu: (e: React.MouseEvent) => void
   onCompositionStart?: () => void
   onCompositionEnd?: () => void
+  /** Called when the hidden IME input for a selected empty row fires compositionend */
+  onHiddenCompositionEnd?: (text: string) => void
 }
 
 function EmptyRow({
@@ -591,8 +593,26 @@ function EmptyRow({
   onContextMenu,
   onCompositionStart,
   onCompositionEnd,
+  onHiddenCompositionEnd,
 }: EmptyRowProps) {
   const baseRowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'
+  // Whether this empty row has a selected name cell (and should show the hidden IME input)
+  const isNameSelected = !isEditing && selectedCol === 'name'
+  const hiddenInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus the hidden input when the name cell becomes selected so IME events are
+  // captured before the user presses any key (same mechanism as task row hidden inputs).
+  useEffect(() => {
+    if (isNameSelected) {
+      const el = hiddenInputRef.current
+      if (el) {
+        el.value = ''
+        el.style.pointerEvents = 'auto'
+        el.focus({ preventScroll: true })
+        el.style.pointerEvents = 'none'
+      }
+    }
+  }, [isNameSelected])
 
   return (
     <div
@@ -608,7 +628,7 @@ function EmptyRow({
       >
         {/* Empty rows have no WBS number; show nothing in the row number cell */}
       </div>
-      {columns.map((col, colIdx) => {
+      {columns.map((col) => {
         const isSelected = !isEditing && selectedCol === col
         const isEditingThisCell = col === 'name' && isEditing
         return (
@@ -628,6 +648,7 @@ function EmptyRow({
               paddingLeft: 8,
               paddingRight: 8,
               borderBottom: '1px dashed #cbd5e1',
+              position: col === 'name' ? 'relative' : undefined,
             }}
             onClick={(e) => {
               e.stopPropagation()
@@ -651,6 +672,48 @@ function EmptyRow({
                 onCompositionEnd={onCompositionEnd}
                 className="w-full text-xs bg-transparent border-none outline-none"
                 onClick={(e) => e.stopPropagation()}
+              />
+            ) : col === 'name' && isNameSelected ? (
+              // Hidden input present while name cell is selected so IME composition
+              // events are captured before the user presses any key.
+              // This mirrors the hiddenInputMapRef mechanism used by task rows.
+              <input
+                ref={hiddenInputRef}
+                defaultValue=""
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  opacity: 0,
+                  border: 'none',
+                  outline: 'none',
+                  background: 'transparent',
+                  cursor: 'default',
+                  fontSize: 'inherit',
+                  pointerEvents: 'none',
+                }}
+                tabIndex={-1}
+                onCompositionStart={() => onCompositionStart?.()}
+                onCompositionEnd={(e) => {
+                  onCompositionEnd?.()
+                  if (e.data) onHiddenCompositionEnd?.(e.data)
+                }}
+                onChange={(e) => {
+                  // Non-IME direct input (e.g. ASCII): open edit mode with the typed char
+                  if (e.target.value) {
+                    onHiddenCompositionEnd?.(e.target.value)
+                    e.target.value = ''
+                  }
+                }}
+                onKeyDown={(e) => {
+                  // Prevent printable keys from bubbling to handleGridKeyDown
+                  // (onChange already handles opening edit mode for these keys)
+                  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    e.stopPropagation()
+                  }
+                }}
               />
             ) : null}
           </div>
@@ -1974,12 +2037,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     if (!targetTask) return
     const targetPhaseId = targetTask.phase_id
 
-    // Use the visual display order (displayedTaskIdsRef) so pasted rows appear
-    // in the correct Gantt chart row position, matching the on-screen order.
-    // If the ref is stale or partial (e.g. due to filtering), fall back to the tasks prop
-    // to ensure the full reorder list always matches tasks.length, preventing row desync.
-    const visualIds = displayedTaskIdsRef.current.length === tasks.length
-      ? displayedTaskIdsRef.current
+    // Snapshot the visual display order NOW (before any async upsertTask calls that
+    // trigger re-renders and update displayedTaskIdsRef). After await points the ref
+    // will have N+M entries while the stale-closure `tasks` still has N, causing the
+    // old length-guard to fall back to prop order instead of visual (phase-grouped) order.
+    const visualIds = displayedTaskIdsRef.current.length > 0
+      ? [...displayedTaskIdsRef.current]
       : tasks.map((t) => t.id)
 
     // Determine insertion index based on visual order
@@ -3391,6 +3454,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 }}
                 onCompositionStart={() => { isComposingRef.current = true }}
                 onCompositionEnd={() => { isComposingRef.current = false }}
+                onHiddenCompositionEnd={(text) => {
+                  // IME composition completed on the hidden input while the empty row
+                  // was selected. Open edit mode and seed it with the confirmed text.
+                  isComposingRef.current = false
+                  setEditingEmptyRowIndex(i)
+                  setEmptyRowValue(text)
+                }}
               />
             ))
           })()}
