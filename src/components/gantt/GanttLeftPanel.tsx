@@ -1034,20 +1034,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   // Tasks with no phase go into an "未分類" group at the end.
   // Each entry carries a WBS number reflecting the phase/task hierarchy.
   const rows: RowEntry[] = useMemo(() => {
-    const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
     const result: RowEntry[] = []
     let visualIndex = 0
-    let phaseCounter = 0
+    // topCounter mirrors the same counting logic as buildWbsNumberMap so that
+    // phase header WBS numbers stay in sync with task WBS numbers.
+    let topCounter = 0
 
     // Pre-compute WBS numbers for all real tasks using the shared utility.
     const wbsNumberMap = buildWbsNumberMap(tasks, phases)
-
-    const buildPhaseEntries = (phaseTasks: TaskWithBaseline[]) => {
-      for (const task of phaseTasks) {
-        result.push({ kind: 'task', task, visualIndex, wbsNumber: wbsNumberMap.get(task.id) ?? '' })
-        visualIndex++
-      }
-    }
 
     const computeAgg = (phaseTasks: TaskWithBaseline[]) => {
       if (phaseTasks.length === 0) return { aggStart: null, aggEnd: null, aggProgress: 0 }
@@ -1059,34 +1053,44 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return { aggStart, aggEnd, aggProgress }
     }
 
-    for (const phase of sortedPhases) {
-      const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
-      phaseCounter++
-      const phasePrefix = String(phaseCounter)
-      const { aggStart, aggEnd, aggProgress } = computeAgg(phaseTasks)
-      result.push({ kind: 'phase', phase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
-      buildPhaseEntries(phaseTasks)
+    // Interleaved ordering: walk tasks sorted by display_order, emit phase
+    // header the first time a task belonging to that phase is encountered,
+    // then emit the task itself. Unassigned tasks are emitted inline.
+    const sortedTasks = [...tasks].sort((a, b) => a.display_order - b.display_order)
+    const emittedPhaseIds = new Set<string>()
+    const phaseMap = new Map(phases.map((p) => [p.id, p]))
+
+    for (const task of sortedTasks) {
+      if (task.phase_id !== null) {
+        if (!emittedPhaseIds.has(task.phase_id)) {
+          emittedPhaseIds.add(task.phase_id)
+          topCounter++
+          const phase = phaseMap.get(task.phase_id)
+          if (phase) {
+            const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
+            const phaseWbs = String(topCounter)
+            const { aggStart, aggEnd, aggProgress } = computeAgg(phaseTasks)
+            result.push({ kind: 'phase', phase, wbsNumber: phaseWbs, aggStart, aggEnd, aggProgress })
+            visualIndex++
+          }
+        }
+      } else {
+        // Unassigned task: gets its own top-level WBS number
+        topCounter++
+      }
+      result.push({ kind: 'task', task, visualIndex, wbsNumber: wbsNumberMap.get(task.id) ?? '' })
+      visualIndex++
     }
 
-    const unassigned = tasks.filter((t) => t.phase_id === null)
-    if (unassigned.length > 0) {
-      if (phases.length > 0) {
-        // Only show the 未分類 header when mixed with real phases
-        const unassignedPhase: Phase = {
-          id: '__unassigned__',
-          project_id: '',
-          name: '未分類',
-          display_order: Infinity,
-          color: '#94a3b8',
-          start_date: null,
-          end_date: null,
-        }
-        phaseCounter++
-        const phasePrefix = String(phaseCounter)
-        const { aggStart, aggEnd, aggProgress } = computeAgg(unassigned)
-        result.push({ kind: 'phase', phase: unassignedPhase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
-      }
-      buildPhaseEntries(unassigned)
+    // Emit phases that have no tasks, sorted by display_order
+    const emptyPhases = [...phases]
+      .filter((p) => !emittedPhaseIds.has(p.id))
+      .sort((a, b) => a.display_order - b.display_order)
+    for (const phase of emptyPhases) {
+      topCounter++
+      const { aggStart, aggEnd, aggProgress } = computeAgg([])
+      result.push({ kind: 'phase', phase, wbsNumber: String(topCounter), aggStart, aggEnd, aggProgress })
+      visualIndex++
     }
 
     return result

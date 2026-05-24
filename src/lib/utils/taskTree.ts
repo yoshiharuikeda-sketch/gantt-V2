@@ -45,42 +45,46 @@ export function buildWbsNumberMap(
   tasks: Task[],
   phases: Phase[]
 ): Map<string, string> {
-  const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
   const map = new Map<string, string>()
-  let phaseCounter = 0
+  const sortedTasks = [...tasks].sort((a, b) => a.display_order - b.display_order)
 
-  const processGroup = (groupTasks: Task[], phasePrefix: string) => {
-    const counters: number[] = []
-    for (const task of groupTasks) {
+  // Track which phases have been assigned a top-level WBS number
+  const phaseNumbers = new Map<string, number>()
+  // Track per-phase task counters for sub-numbering
+  const phaseTaskCounters = new Map<string, number[]>()
+  let topCounter = 0
+
+  for (const task of sortedTasks) {
+    if (task.phase_id !== null) {
+      // First task in this phase: assign a new top-level number to the phase
+      if (!phaseNumbers.has(task.phase_id)) {
+        topCounter++
+        phaseNumbers.set(task.phase_id, topCounter)
+        phaseTaskCounters.set(task.phase_id, [])
+      }
+      const phasePrefix = String(phaseNumbers.get(task.phase_id)!)
+      const counters = phaseTaskCounters.get(task.phase_id)!
       const d = (task as { depth?: number }).depth ?? 0
       while (counters.length <= d) counters.push(0)
       counters.splice(d + 1)
       counters[d] = (counters[d] ?? 0) + 1
       const suffix = counters.slice(0, d + 1).join('.')
       map.set(task.id, `${phasePrefix}.${suffix}`)
-    }
-  }
-
-  for (const phase of sortedPhases) {
-    const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
-    if (phaseTasks.length === 0) continue
-    phaseCounter++
-    processGroup(phaseTasks, String(phaseCounter))
-  }
-
-  const unassigned = tasks.filter((t) => t.phase_id === null)
-  if (unassigned.length > 0) {
-    if (sortedPhases.length === 0) {
-      // No phases: top-level sequential WBS numbers (1, 2, 3, ...)
-      let counter = 0
-      for (const task of unassigned) {
-        counter++
-        map.set(task.id, String(counter))
-      }
     } else {
-      phaseCounter++
-      processGroup(unassigned, String(phaseCounter))
+      // Unassigned task: gets its own top-level number
+      topCounter++
+      map.set(task.id, String(topCounter))
     }
+  }
+
+  // Phases with no tasks get top-level numbers after all task-based entries,
+  // sorted by phase.display_order
+  const emptyPhases = [...phases]
+    .filter((p) => !phaseNumbers.has(p.id))
+    .sort((a, b) => a.display_order - b.display_order)
+  for (const phase of emptyPhases) {
+    topCounter++
+    phaseNumbers.set(phase.id, topCounter)
   }
 
   return map
