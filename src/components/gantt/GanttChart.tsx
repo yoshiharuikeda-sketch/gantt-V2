@@ -186,13 +186,17 @@ export function GanttChart() {
 
     await Promise.all(
       tasksToMove.map(async (t) => {
-        const updated = { ...t, phase_id: newPhase.id }
-        upsertTask(updated)
-        await fetch('/api/tasks', {
+        const res = await fetch('/api/tasks', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: t.id, version: t.version, phase_id: newPhase.id }),
         })
+        if (res.ok) {
+          const { data: updatedTask } = await res.json() as { data: import('@/types').Task }
+          upsertTask(updatedTask)
+        } else {
+          upsertTask({ ...t, phase_id: newPhase.id })
+        }
       })
     )
 

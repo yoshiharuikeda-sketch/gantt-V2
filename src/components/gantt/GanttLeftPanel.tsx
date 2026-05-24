@@ -1796,8 +1796,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     removePhase(phaseId)
     for (const t of phaseTasks) upsertTask({ ...t, phase_id: null })
 
-    // PATCH: tasks の phase_id を null に変更
-    console.log('[convertPhaseToTask] patching tasks:', phaseTasks.map(t => ({ id: t.id, version: t.version })))
+    // PATCH: tasks の phase_id を null に変更（レスポンスから最新 version をストアに反映）
     const patchResults = await Promise.all(phaseTasks.map((t) =>
       fetch('/api/tasks', {
         method: 'PATCH',
@@ -1808,12 +1807,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     if (patchResults.some((r) => !r.ok)) {
       const failed = patchResults.find(r => !r.ok)
-      const failedBody = await failed?.text()
-      console.error('[convertPhaseToTask] PATCH tasks failed, status:', failed?.status, 'body:', failedBody)
+      console.error('[convertPhaseToTask] PATCH tasks failed, status:', failed?.status)
       upsertPhase(phase)
       for (const t of phaseTasks) upsertTask(t)
       return
     }
+
+    // PATCHレスポンスから最新バージョンをストアに反映
+    await Promise.all(patchResults.map(async (r) => {
+      const { data: updatedTask } = await r.json() as { data: Task }
+      if (updatedTask) upsertTask(updatedTask)
+    }))
 
     // DELETE: フェーズ削除
     const deleteRes = await fetch(`/api/phases?id=${phaseId}`, { method: 'DELETE' })
