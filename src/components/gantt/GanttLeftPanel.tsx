@@ -1070,20 +1070,22 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     const unassigned = tasks.filter((t) => t.phase_id === null)
     if (unassigned.length > 0) {
-      // Synthetic phase-like header for unassigned tasks
-      const unassignedPhase: Phase = {
-        id: '__unassigned__',
-        project_id: '',
-        name: '未分類',
-        display_order: Infinity,
-        color: '#94a3b8',
-        start_date: null,
-        end_date: null,
+      if (phases.length > 0) {
+        // Only show the 未分類 header when mixed with real phases
+        const unassignedPhase: Phase = {
+          id: '__unassigned__',
+          project_id: '',
+          name: '未分類',
+          display_order: Infinity,
+          color: '#94a3b8',
+          start_date: null,
+          end_date: null,
+        }
+        phaseCounter++
+        const phasePrefix = String(phaseCounter)
+        const { aggStart, aggEnd, aggProgress } = computeAgg(unassigned)
+        result.push({ kind: 'phase', phase: unassignedPhase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
       }
-      phaseCounter++
-      const phasePrefix = String(phaseCounter)
-      const { aggStart, aggEnd, aggProgress } = computeAgg(unassigned)
-      result.push({ kind: 'phase', phase: unassignedPhase, wbsNumber: phasePrefix, aggStart, aggEnd, aggProgress })
       buildPhaseEntries(unassigned)
     }
 
@@ -1301,6 +1303,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     const { taskId, col: field } = cell
     setActiveCell(null)
+    onEditingChange(false)  // Synchronous notification, don't wait for useEffect
 
     type PatchPayload = {
       id: string
@@ -1367,7 +1370,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     } finally {
       committingRef.current = false
     }
-  }, [upsertTask, pushCommand])
+  }, [upsertTask, pushCommand, onEditingChange])
 
   const commitEdit = useCallback((task: TaskWithBaseline): Promise<void> => {
     if (!activeCell) return Promise.resolve()
@@ -1378,9 +1381,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // 編集キャンセル後は選択状態（ハイライト）に戻す
     if (activeCell) setSelectedCell(activeCell)
     setActiveCell(null)
+    onEditingChange(false)
     setEditValue('')
     committingRef.current = false
-  }, [activeCell])
+  }, [activeCell, onEditingChange])
 
   // Navigate to adjacent cell on Tab/Enter
   const handleCellKeyDown = useCallback((
@@ -1766,8 +1770,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const phase = phases.find((p) => p.id === phaseId)
     if (!phase || !currentProject) return
 
-    // フェーズ内タスク（prop の tasks を使用）
-    const phaseTasks = tasks.filter((t) => t.phase_id === phaseId)
+    // Use storeTasks to get latest versions (avoids CONFLICT on stale prop versions)
+    const phaseTasks = storeTasks.filter((t) => t.phase_id === phaseId)
 
     // 子タスクの移動先: 削除後に残る最後のフェーズ（なければ未分類）
     const remainingPhases = phases.filter((p) => p.id !== phaseId)
@@ -1790,6 +1794,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     ))
 
     if (patchResults.some((r) => !r.ok)) {
+      console.error('[convertPhaseToTask] PATCH tasks failed')
       upsertPhase(phase)
       for (const t of phaseTasks) upsertTask(t)
       return
@@ -1798,13 +1803,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     // DELETE: フェーズ削除
     const deleteRes = await fetch(`/api/phases?id=${phaseId}`, { method: 'DELETE' })
     if (!deleteRes.ok) {
+      console.error('[convertPhaseToTask] DELETE phase failed', await deleteRes.text())
       upsertPhase(phase)
       for (const t of phaseTasks) upsertTask(t)
       return
     }
 
     // フェーズ名でタスクを新規作成（末尾に追加）
-    // Use tasks prop (stable, passed from parent) for display_order to avoid stale closure issues
     const taskRes = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1814,7 +1819,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         name: phase.name,
         status: 'not_started',
         progress: 0,
-        display_order: tasks.length,
+        display_order: storeTasks.length,
       }),
     })
     if (taskRes.ok) {
@@ -1822,11 +1827,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       upsertTask(newTask)
 
       // Update store order so WBS numbers are recalculated correctly.
-      // Use tasks prop (not storeTasks) to avoid stale closure; append new task at the end.
-      const allIds = [...tasks.map((t) => t.id), newTask.id]
+      const allIds = [...storeTasks.map((t) => t.id), newTask.id]
       reorderTasks(allIds)
     }
-  }, [phases, tasks, currentProject, upsertTask, removePhase, upsertPhase, reorderTasks])
+  }, [phases, tasks, storeTasks, currentProject, upsertTask, removePhase, upsertPhase, reorderTasks])
 
   // ─── WBS drag-selection ──────────────────────────────────────────────────────
 

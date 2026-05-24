@@ -50,8 +50,8 @@ export function useUndoRedo(isEditing: () => boolean) {
 
     switch (field) {
       case 'name':
-        if (typeof value !== 'string' || !value.trim()) return
-        patch.name = value.trim()
+        if (typeof value !== 'string') return
+        patch.name = value  // Allow empty string
         break
       case 'status':
         if (typeof value !== 'string') return

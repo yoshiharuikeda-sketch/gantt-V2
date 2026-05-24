@@ -70,8 +70,17 @@ export function buildWbsNumberMap(
 
   const unassigned = tasks.filter((t) => t.phase_id === null)
   if (unassigned.length > 0) {
-    phaseCounter++
-    processGroup(unassigned, String(phaseCounter))
+    if (sortedPhases.length === 0) {
+      // No phases: top-level sequential WBS numbers (1, 2, 3, ...)
+      let counter = 0
+      for (const task of unassigned) {
+        counter++
+        map.set(task.id, String(counter))
+      }
+    } else {
+      phaseCounter++
+      processGroup(unassigned, String(phaseCounter))
+    }
   }
 
   return map
