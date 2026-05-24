@@ -603,7 +603,7 @@ function EmptyRow({
   const hiddenInputRef = useRef<HTMLInputElement>(null)
   const isHiddenComposing = useRef(false)
   const [isComposing, setIsComposing] = useState(false)
-  const [hiddenValue, setHiddenValue] = useState('')
+  const [inputResetKey, setInputResetKey] = useState(0)
 
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
@@ -611,7 +611,7 @@ function EmptyRow({
     if (isNameSelected) {
       const el = hiddenInputRef.current
       if (el) {
-        setHiddenValue('')
+        setInputResetKey((k) => k + 1)
         el.style.pointerEvents = 'auto'
         el.focus({ preventScroll: true })
         el.style.pointerEvents = 'none'
@@ -683,8 +683,9 @@ function EmptyRow({
               // events are captured before the user presses any key.
               // This mirrors the hiddenInputMapRef mechanism used by task rows.
               <input
+                key={inputResetKey}
                 ref={hiddenInputRef}
-                value={hiddenValue}
+                defaultValue=""
                 style={{
                   position: 'absolute',
                   top: 0,
@@ -712,10 +713,10 @@ function EmptyRow({
                   if (isHiddenComposing.current) return
                   // Non-IME direct input (e.g. ASCII): open edit mode with the typed char
                   const val = e.target.value
-                  setHiddenValue('')
                   if (val) {
                     onHiddenCompositionEnd?.(val)
                   }
+                  setInputResetKey((k) => k + 1)
                 }}
                 onKeyDown={(e) => {
                   // Prevent printable keys from bubbling to handleGridKeyDown
