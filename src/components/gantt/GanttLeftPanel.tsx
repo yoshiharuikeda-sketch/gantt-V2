@@ -1763,10 +1763,21 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     }
     const phase = phases.find((p) => p.id === phaseId)
     if (!phase) return
-    removePhase(phaseId)  // optimistic
+    const phaseTasks = storeTasks.filter((t) => t.phase_id === phaseId)
+    // optimistic: フェーズと子タスクを即時削除
+    removePhase(phaseId)
+    for (const t of phaseTasks) removeTask(t.id)
     const res = await fetch(`/api/phases?id=${phaseId}`, { method: 'DELETE' })
-    if (!res.ok) upsertPhase(phase)  // revert
-  }, [phases, tasks, removeTask, removePhase, upsertPhase])
+    if (!res.ok) {
+      upsertPhase(phase)
+      for (const t of phaseTasks) upsertTask(t)
+      return
+    }
+    // 子タスクをDBから削除
+    await Promise.all(phaseTasks.map((t) =>
+      fetch(`/api/tasks?id=${t.id}`, { method: 'DELETE' })
+    ))
+  }, [phases, tasks, storeTasks, removeTask, removePhase, upsertPhase, upsertTask])
 
   const closePhaseContextMenu = useCallback(() => setPhaseContextMenu(null), [])
 
