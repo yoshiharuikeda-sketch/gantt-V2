@@ -577,6 +577,8 @@ interface EmptyRowProps {
   onCompositionEnd?: () => void
   /** Called when the hidden IME input for a selected empty row fires compositionend */
   onHiddenCompositionEnd?: (text: string) => void
+  /** Increments on every onCellClick('name') so the focus effect re-fires even when already selected */
+  selectionToken?: number
 }
 
 function EmptyRow({
@@ -596,6 +598,7 @@ function EmptyRow({
   onCompositionStart,
   onCompositionEnd,
   onHiddenCompositionEnd,
+  selectionToken,
 }: EmptyRowProps) {
   const baseRowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'
   // Whether this empty row has a selected name cell (and should show the hidden IME input)
@@ -607,6 +610,8 @@ function EmptyRow({
 
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
+  // Depend on selectionToken (not isNameSelected) so the effect re-fires on every click
+  // even when the name cell is already selected (token increments on every selection).
   useEffect(() => {
     if (isNameSelected) {
       const el = hiddenInputRef.current
@@ -616,7 +621,7 @@ function EmptyRow({
         el.style.pointerEvents = 'none'
       }
     }
-  }, [isNameSelected])
+  }, [selectionToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -961,6 +966,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const wrapText = true
   // Selected empty row cell (single-click selection; paste origin)
   const [selectedEmptyRow, setSelectedEmptyRow] = useState<{ rowIndex: number; col: GanttColKey } | null>(null)
+  // Increments on every name-cell click for an empty row so the focus useEffect in EmptyRow re-fires
+  const [emptyRowSelectionToken, setEmptyRowSelectionToken] = useState(0)
   // Ref so handleGridKeyDown can read the latest empty-row count without stale closures
   const emptyRowCountRef = useRef(0)
   // taskId that should receive name-cell autofocus after insert
@@ -1467,9 +1474,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             }, 0)
           }
         } else {
+          // Last task: move to first empty row in selected state (not edit mode),
+          // mirroring the behavior of Enter from a selected (non-editing) task.
+          const editableCols = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
           setTimeout(() => {
-            setEditingEmptyRowIndex(0)
-            setEmptyRowValue('')
+            setSelectedCell(null)
+            setSelectedRowId(null)
+            setSelectedRowIds(new Set())
+            setSelectedEmptyRow({ rowIndex: 0, col: NON_EDITABLE_COLS.has(col) ? (editableCols[0] ?? 'name') : col })
             gridRef.current?.focus()
           }, 0)
         }
@@ -3520,6 +3532,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 }}
                 onCellClick={(col) => {
                   setSelectedEmptyRow({ rowIndex: i, col })
+                  if (col === 'name') setEmptyRowSelectionToken((t) => t + 1)
                   setSelectedCell(null)
                   setSelectionAnchor(null)
                   setSelectionHead(null)
@@ -3541,6 +3554,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                   setEditingEmptyRowIndex(i)
                   setEmptyRowValue(text)
                 }}
+                selectionToken={emptyRowSelectionToken}
               />
             ))
           })()}
