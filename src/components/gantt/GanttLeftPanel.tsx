@@ -577,8 +577,8 @@ interface EmptyRowProps {
   onCompositionEnd?: () => void
   /** Called when the hidden IME input for a selected empty row fires compositionend */
   onHiddenCompositionEnd?: (text: string) => void
-  /** Increments on every onCellClick('name') so the focus effect re-fires even when already selected */
-  selectionToken?: number
+  /** Receives parent's selectedEmptyRow value; every setSelectedEmptyRow(...) creates a new object reference so the focus effect re-fires on every selection update */
+  currentSelection?: { rowIndex: number; col: string } | null
 }
 
 function EmptyRow({
@@ -598,7 +598,7 @@ function EmptyRow({
   onCompositionStart,
   onCompositionEnd,
   onHiddenCompositionEnd,
-  selectionToken,
+  currentSelection,
 }: EmptyRowProps) {
   const baseRowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'
   // Whether this empty row has a selected name cell (and should show the hidden IME input)
@@ -610,8 +610,9 @@ function EmptyRow({
 
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
-  // Depend on selectionToken (not isNameSelected) so the effect re-fires on every click
-  // even when the name cell is already selected (token increments on every selection).
+  // Depend on currentSelection (the parent's selectedEmptyRow object) — every
+  // setSelectedEmptyRow({...}) creates a new reference so the effect re-fires on every
+  // selection update (click, keyboard navigation, programmatic post-submit selection).
   useEffect(() => {
     if (isNameSelected) {
       const el = hiddenInputRef.current
@@ -621,7 +622,7 @@ function EmptyRow({
         el.style.pointerEvents = 'none'
       }
     }
-  }, [selectionToken]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentSelection]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -966,8 +967,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const wrapText = true
   // Selected empty row cell (single-click selection; paste origin)
   const [selectedEmptyRow, setSelectedEmptyRow] = useState<{ rowIndex: number; col: GanttColKey } | null>(null)
-  // Increments on every name-cell click for an empty row so the focus useEffect in EmptyRow re-fires
-  const [emptyRowSelectionToken, setEmptyRowSelectionToken] = useState(0)
   // Ref so handleGridKeyDown can read the latest empty-row count without stale closures
   const emptyRowCountRef = useRef(0)
   // taskId that should receive name-cell autofocus after insert
@@ -1496,6 +1495,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const trimmed = emptyRowValue.trim()
     setEditingEmptyRowIndex(null)
     setEmptyRowValue('')
+    // Clear immediately to prevent ghost hidden input during the async fetch
+    setSelectedEmptyRow(null)
 
     if (!trimmed || !currentProject) {
       committingRef.current = false
@@ -1530,17 +1531,19 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
       const json = await res.json() as { data: Task }
       upsertTask(json.data)
+      // Move selection to the next empty row after submission.
+      // setSelectedEmptyRow creates a new object reference, so the EmptyRow's
+      // useEffect([currentSelection]) will fire and focus the hidden input automatically.
+      const nextIdx = editingEmptyRowIndex ?? 0
+      setSelectedEmptyRow({ rowIndex: nextIdx, col: 'name' })
       setExtraEmptyRows((n) => n + 1)
-      // Move selection to the next empty row after submission
-      const nextRowIndex = (editingEmptyRowIndex ?? selectedEmptyRow?.rowIndex ?? 0) + 1
-      const nextCol = selectedEmptyRow?.col ?? 'name'
-      setSelectedEmptyRow({ rowIndex: nextRowIndex, col: nextCol })
+      gridRef.current?.focus()
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
       committingRef.current = false
     }
-  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask, editingEmptyRowIndex, selectedEmptyRow])
+  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask, editingEmptyRowIndex])
 
   const cancelEmptyRow = useCallback(() => {
     setEditingEmptyRowIndex(null)
@@ -3532,7 +3535,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 }}
                 onCellClick={(col) => {
                   setSelectedEmptyRow({ rowIndex: i, col })
-                  if (col === 'name') setEmptyRowSelectionToken((t) => t + 1)
                   setSelectedCell(null)
                   setSelectionAnchor(null)
                   setSelectionHead(null)
@@ -3554,7 +3556,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                   setEditingEmptyRowIndex(i)
                   setEmptyRowValue(text)
                 }}
-                selectionToken={emptyRowSelectionToken}
+                currentSelection={selectedEmptyRow}
               />
             ))
           })()}
