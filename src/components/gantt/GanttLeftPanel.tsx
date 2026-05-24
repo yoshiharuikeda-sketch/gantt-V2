@@ -611,7 +611,6 @@ function EmptyRow({
     if (isNameSelected) {
       const el = hiddenInputRef.current
       if (el) {
-        setInputResetKey((k) => k + 1)
         el.style.pointerEvents = 'auto'
         el.focus({ preventScroll: true })
         el.style.pointerEvents = 'none'
@@ -1520,12 +1519,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       const json = await res.json() as { data: Task }
       upsertTask(json.data)
       setExtraEmptyRows((n) => n + 1)
+      // Move selection to the next empty row after submission
+      const nextRowIndex = (editingEmptyRowIndex ?? selectedEmptyRow?.rowIndex ?? 0) + 1
+      const nextCol = selectedEmptyRow?.col ?? 'name'
+      setSelectedEmptyRow({ rowIndex: nextRowIndex, col: nextCol })
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
       committingRef.current = false
     }
-  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask])
+  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask, editingEmptyRowIndex, selectedEmptyRow])
 
   const cancelEmptyRow = useCallback(() => {
     setEditingEmptyRowIndex(null)
