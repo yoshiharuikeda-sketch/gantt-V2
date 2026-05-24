@@ -1852,6 +1852,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         ...phaseTasks.map((t) => t.id),
         ...tasksAfter.map((t) => t.id),
       ]
+      // バッチ更新: upsertTask と reorderTasks を同一レンダリングサイクルで適用
+      reorderTasks(allIds)
       const items = allIds.map((id, index) => ({ id, display_order: index }))
       try {
         await fetch('/api/tasks/reorder', {
@@ -1862,7 +1864,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       } catch (err) {
         console.error('[convertPhaseToTask] reorder failed:', err)
       }
-      reorderTasks(allIds)
     } else {
       const body = await taskRes.text()
       console.error('[convertPhaseToTask] POST task failed:', taskRes.status, body)

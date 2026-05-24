@@ -182,9 +182,8 @@ export function GanttChart() {
       return
     }
     const { data: newPhase } = await phaseRes.json() as { data: import('@/types').Phase }
-    upsertPhase(newPhase)
 
-    await Promise.all(
+    const taskResults = await Promise.all(
       tasksToMove.map(async (t) => {
         const res = await fetch('/api/tasks', {
           method: 'PATCH',
@@ -192,13 +191,17 @@ export function GanttChart() {
           body: JSON.stringify({ id: t.id, version: t.version, phase_id: newPhase.id }),
         })
         if (res.ok) {
-          const { data: updatedTask } = await res.json() as { data: import('@/types').Task }
-          upsertTask(updatedTask)
-        } else {
-          upsertTask({ ...t, phase_id: newPhase.id })
+          return (await res.json() as { data: import('@/types').Task }).data
         }
+        return { ...t, phase_id: newPhase.id }
       })
     )
+
+    // バッチ更新: upsertPhase と upsertTask を同一レンダリングサイクルで適用
+    upsertPhase(newPhase)
+    for (const updatedTask of taskResults) {
+      upsertTask(updatedTask)
+    }
 
     await fetch(`/api/tasks?id=${taskId}`, { method: 'DELETE' })
   }, [storeTasks, currentProject, phases, upsertPhase, upsertTask, removeTask])
