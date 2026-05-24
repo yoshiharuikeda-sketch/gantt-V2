@@ -1774,26 +1774,33 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     const phase = phases.find((p) => p.id === phaseId)
     if (!phase || !currentProject) return
 
-    // Use storeTasks to get latest versions (avoids CONFLICT on stale prop versions)
-    const phaseTasks = storeTasks.filter((t) => t.phase_id === phaseId)
+    // Compute all arrays BEFORE any async operations using storeTasks at call time
+    const phaseTasks = storeTasks
+      .filter((t) => t.phase_id === phaseId)
+      .sort((a, b) => a.display_order - b.display_order)
 
-    // 子タスクの移動先: 削除後に残る最後のフェーズ（なければ未分類）
-    const remainingPhases = phases.filter((p) => p.id !== phaseId)
-    const targetPhase = remainingPhases.length > 0
-      ? [...remainingPhases].sort((a, b) => b.display_order - a.display_order)[0]
-      : null
-    const targetPhaseId = targetPhase?.id ?? null
+    const firstPhaseTaskDo = phaseTasks.length > 0
+      ? Math.min(...phaseTasks.map((t) => t.display_order))
+      : Infinity
 
-    // 楽観的更新: フェーズ内タスクを targetPhase に移動、フェーズを削除
+    const tasksBefore = storeTasks
+      .filter((t) => t.phase_id !== phaseId && t.display_order < firstPhaseTaskDo)
+      .sort((a, b) => a.display_order - b.display_order)
+
+    const tasksAfter = storeTasks
+      .filter((t) => t.phase_id !== phaseId && t.display_order >= firstPhaseTaskDo)
+      .sort((a, b) => a.display_order - b.display_order)
+
+    // 楽観的更新: フェーズを削除、子タスクを未分類 (phase_id = null) に移動
     removePhase(phaseId)
-    for (const t of phaseTasks) upsertTask({ ...t, phase_id: targetPhaseId })
+    for (const t of phaseTasks) upsertTask({ ...t, phase_id: null })
 
-    // PATCH: tasks の phase_id を targetPhaseId に変更
+    // PATCH: tasks の phase_id を null に変更
     const patchResults = await Promise.all(phaseTasks.map((t) =>
       fetch('/api/tasks', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: t.id, version: t.version, phase_id: targetPhaseId }),
+        body: JSON.stringify({ id: t.id, version: t.version, phase_id: null }),
       })
     ))
 
@@ -1813,13 +1820,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       return
     }
 
-    // フェーズ名でタスクを新規作成（末尾に追加）
+    // フェーズ名でタスクを新規作成
     const taskRes = await fetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_id: currentProject.id,
-        phase_id: targetPhaseId,
+        phase_id: null,
         name: phase.name,
         status: 'not_started',
         progress: 0,
@@ -1830,8 +1837,13 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       const { data: newTask } = await taskRes.json() as { data: Task }
       upsertTask(newTask)
 
-      // Update store order so WBS numbers are recalculated correctly.
-      const allIds = [...storeTasks.map((t) => t.id), newTask.id]
+      // 新タスクをフェーズヘッダーのあった位置に挿入し、元子タスクをその後ろに並べる
+      const allIds = [
+        ...tasksBefore.map((t) => t.id),
+        newTask.id,
+        ...phaseTasks.map((t) => t.id),
+        ...tasksAfter.map((t) => t.id),
+      ]
       reorderTasks(allIds)
     }
   }, [phases, tasks, storeTasks, currentProject, upsertTask, removePhase, upsertPhase, reorderTasks])
