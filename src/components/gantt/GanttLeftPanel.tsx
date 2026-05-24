@@ -1771,7 +1771,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const closePhaseContextMenu = useCallback(() => setPhaseContextMenu(null), [])
 
   const convertPhaseToTask = useCallback(async (phaseId: string) => {
-    console.log('[convertPhaseToTask] called with phaseId:', phaseId)
+    console.log('[convertPhaseToTask] called with phaseId:', phaseId, 'phaseTasks will be computed from storeTasks')
     const phase = phases.find((p) => p.id === phaseId)
     if (!phase || !currentProject) return
 
@@ -1797,6 +1797,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     for (const t of phaseTasks) upsertTask({ ...t, phase_id: null })
 
     // PATCH: tasks の phase_id を null に変更
+    console.log('[convertPhaseToTask] patching tasks:', phaseTasks.map(t => ({ id: t.id, version: t.version })))
     const patchResults = await Promise.all(phaseTasks.map((t) =>
       fetch('/api/tasks', {
         method: 'PATCH',
@@ -1807,7 +1808,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     if (patchResults.some((r) => !r.ok)) {
       const failed = patchResults.find(r => !r.ok)
-      console.error('[convertPhaseToTask] PATCH tasks failed, status:', failed?.status)
+      const failedBody = await failed?.text()
+      console.error('[convertPhaseToTask] PATCH tasks failed, status:', failed?.status, 'body:', failedBody)
       upsertPhase(phase)
       for (const t of phaseTasks) upsertTask(t)
       return
