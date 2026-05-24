@@ -602,6 +602,8 @@ function EmptyRow({
   const isNameSelected = !isEditing && selectedCol === 'name'
   const hiddenInputRef = useRef<HTMLInputElement>(null)
   const isHiddenComposing = useRef(false)
+  const [isComposing, setIsComposing] = useState(false)
+  const [hiddenValue, setHiddenValue] = useState('')
 
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
@@ -609,7 +611,7 @@ function EmptyRow({
     if (isNameSelected) {
       const el = hiddenInputRef.current
       if (el) {
-        el.value = ''
+        setHiddenValue('')
         el.style.pointerEvents = 'auto'
         el.focus({ preventScroll: true })
         el.style.pointerEvents = 'none'
@@ -682,34 +684,37 @@ function EmptyRow({
               // This mirrors the hiddenInputMapRef mechanism used by task rows.
               <input
                 ref={hiddenInputRef}
-                defaultValue=""
+                value={hiddenValue}
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   width: '100%',
                   height: '100%',
-                  opacity: 0,
+                  opacity: isComposing ? 1 : 0,
                   border: 'none',
                   outline: 'none',
-                  background: 'transparent',
+                  background: isComposing ? 'white' : 'transparent',
+                  color: '#1e293b',
                   cursor: 'default',
                   fontSize: 'inherit',
                   pointerEvents: 'none',
                 }}
                 tabIndex={-1}
-                onCompositionStart={() => { isHiddenComposing.current = true; onCompositionStart?.() }}
+                onCompositionStart={() => { isHiddenComposing.current = true; setIsComposing(true); onCompositionStart?.() }}
                 onCompositionEnd={(e) => {
                   isHiddenComposing.current = false
+                  setIsComposing(false)
                   onCompositionEnd?.()
                   if (e.data) onHiddenCompositionEnd?.(e.data)
                 }}
                 onChange={(e) => {
                   if (isHiddenComposing.current) return
                   // Non-IME direct input (e.g. ASCII): open edit mode with the typed char
-                  if (e.target.value) {
-                    onHiddenCompositionEnd?.(e.target.value)
-                    e.target.value = ''
+                  const val = e.target.value
+                  setHiddenValue('')
+                  if (val) {
+                    onHiddenCompositionEnd?.(val)
                   }
                 }}
                 onKeyDown={(e) => {
@@ -1513,6 +1518,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
       const json = await res.json() as { data: Task }
       upsertTask(json.data)
+      setExtraEmptyRows((n) => n + 1)
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
