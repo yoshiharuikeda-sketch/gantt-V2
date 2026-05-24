@@ -608,6 +608,16 @@ function EmptyRow({
   const [isComposing, setIsComposing] = useState(false)
   const [inputResetKey, setInputResetKey] = useState(0)
 
+  // Reset stale isComposing state when this row is deselected.
+  // If the user navigated away mid-composition (before compositionEnd fired),
+  // isComposing would be stuck true, causing the hidden input to mount visible
+  // (opacity: 1, white background) on the next selection.
+  useEffect(() => {
+    if (!isNameSelected) {
+      setIsComposing(false)
+    }
+  }, [isNameSelected])
+
   // Focus the hidden input when the name cell becomes selected so IME events are
   // captured before the user presses any key (same mechanism as task row hidden inputs).
   // Depend on currentSelection (the parent's selectedEmptyRow object) — every
@@ -1534,7 +1544,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       // Move selection to the next empty row after submission.
       // setSelectedEmptyRow creates a new object reference, so the EmptyRow's
       // useEffect([currentSelection]) will fire and focus the hidden input automatically.
-      const nextIdx = editingEmptyRowIndex ?? 0
+      const nextIdx = (editingEmptyRowIndex ?? 0) + 1
       setSelectedEmptyRow({ rowIndex: nextIdx, col: 'name' })
       setExtraEmptyRows((n) => n + 1)
       gridRef.current?.focus()
