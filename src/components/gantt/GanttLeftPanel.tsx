@@ -1771,6 +1771,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const closePhaseContextMenu = useCallback(() => setPhaseContextMenu(null), [])
 
   const convertPhaseToTask = useCallback(async (phaseId: string) => {
+    console.log('[convertPhaseToTask] called with phaseId:', phaseId)
     const phase = phases.find((p) => p.id === phaseId)
     if (!phase || !currentProject) return
 
@@ -1805,7 +1806,8 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     ))
 
     if (patchResults.some((r) => !r.ok)) {
-      console.error('[convertPhaseToTask] PATCH tasks failed')
+      const failed = patchResults.find(r => !r.ok)
+      console.error('[convertPhaseToTask] PATCH tasks failed, status:', failed?.status)
       upsertPhase(phase)
       for (const t of phaseTasks) upsertTask(t)
       return
@@ -1844,7 +1846,20 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         ...phaseTasks.map((t) => t.id),
         ...tasksAfter.map((t) => t.id),
       ]
+      const items = allIds.map((id, index) => ({ id, display_order: index }))
+      try {
+        await fetch('/api/tasks/reorder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId: currentProject.id, items }),
+        })
+      } catch (err) {
+        console.error('[convertPhaseToTask] reorder failed:', err)
+      }
       reorderTasks(allIds)
+    } else {
+      const body = await taskRes.text()
+      console.error('[convertPhaseToTask] POST task failed:', taskRes.status, body)
     }
   }, [phases, tasks, storeTasks, currentProject, upsertTask, removePhase, upsertPhase, reorderTasks])
 
