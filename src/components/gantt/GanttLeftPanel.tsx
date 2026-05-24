@@ -715,7 +715,8 @@ function EmptyRow({
                   color: '#1e293b',
                   caretColor: isComposing ? '#1e293b' : 'transparent',
                   cursor: 'default',
-                  fontSize: 'inherit',
+                  fontSize: '0.75rem',
+                  paddingLeft: isComposing ? '8px' : '0',
                   pointerEvents: 'none',
                 }}
                 tabIndex={-1}
@@ -1546,8 +1547,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       // Move selection to the next empty row after submission.
       // setSelectedEmptyRow creates a new object reference, so the EmptyRow's
       // useEffect([currentSelection]) will fire and focus the hidden input automatically.
-      const nextIdx = (editingEmptyRowIndex ?? 0) + 1
-      setSelectedEmptyRow({ rowIndex: nextIdx, col: 'name' })
+      setSelectedEmptyRow({ rowIndex: 0, col: 'name' })
       setExtraEmptyRows((n) => n + 1)
       gridRef.current?.focus()
       committingRef.current = false
