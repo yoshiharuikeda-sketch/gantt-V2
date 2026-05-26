@@ -2950,7 +2950,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const handleContextMenu = useCallback((e: React.MouseEvent, taskId: string) => {
     e.preventDefault()
     // If right-clicking a task not in the current selection, collapse selection to just that task
-    if (!selectedRowIds.has(taskId) && selectedRowIds.size <= 1) {
+    if (!selectedRowIds.has(taskId) && selectedRowIds.size <= 1 && !selectionAnchor) {
       setSelectedRowId(taskId)
       setSelectedRowIds(new Set([taskId]))
       // Clear any cell drag-selection so deleteRow uses the right-clicked task
@@ -2958,7 +2958,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       setSelectionHead(null)
     }
     setContextMenu({ x: e.clientX, y: e.clientY, taskId })
-  }, [selectedRowIds])
+  }, [selectedRowIds, selectionAnchor])
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
   const closeEmptyRowContextMenu = useCallback(() => setEmptyRowContextMenu(null), [])
