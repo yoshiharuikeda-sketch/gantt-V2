@@ -2129,6 +2129,26 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   // Sync to ref so deleteRow always reads the latest range without stale closures
   selectionRangeRef.current = selectionRange
 
+  // Unified selected-task IDs: merges both selection systems (row-click and cell-drag).
+  // When rows were selected via row/WBS clicks, selectedRowIds has the IDs.
+  // When rows were selected via cell-drag, selectionAnchor/selectionHead define the range
+  // but selectedRowIds was cleared to an empty Set. This memo combines both.
+  const effectiveSelectedIds = useMemo(() => {
+    if (selectedRowIds.size > 1) return selectedRowIds
+    if (selectionAnchor && selectionHead) {
+      const anchorRowIdx = displayedTaskIds.indexOf(selectionAnchor.taskId)
+      const headRowIdx = displayedTaskIds.indexOf(selectionHead.taskId)
+      if (anchorRowIdx !== -1 && headRowIdx !== -1) {
+        const rowLo = Math.min(anchorRowIdx, headRowIdx)
+        const rowHi = Math.max(anchorRowIdx, headRowIdx)
+        if (rowHi > rowLo) {
+          return new Set(displayedTaskIds.slice(rowLo, rowHi + 1))
+        }
+      }
+    }
+    return selectedRowIds
+  }, [selectedRowIds, selectionAnchor, selectionHead, displayedTaskIds])
+
   const handleCellMouseDown = useCallback((task: TaskWithBaseline, col: GanttColKey, e: React.MouseEvent) => {
     if (e.button !== 0 || e.ctrlKey || e.metaKey) return
 
@@ -2949,8 +2969,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
   const handleContextMenu = useCallback((e: React.MouseEvent, taskId: string) => {
     e.preventDefault()
-    // If right-clicking a task not in the current selection, collapse selection to just that task
-    if (!selectedRowIds.has(taskId) && selectedRowIds.size <= 1 && !selectionAnchor) {
+    // If right-clicking a task not in the current selection, collapse selection to just that task.
+    // effectiveSelectedIds covers both row-click (selectedRowIds) and cell-drag selections.
+    if (!effectiveSelectedIds.has(taskId) && effectiveSelectedIds.size <= 1) {
       setSelectedRowId(taskId)
       setSelectedRowIds(new Set([taskId]))
       // Clear any cell drag-selection so deleteRow uses the right-clicked task
@@ -2958,7 +2979,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       setSelectionHead(null)
     }
     setContextMenu({ x: e.clientX, y: e.clientY, taskId })
-  }, [selectedRowIds, selectionAnchor])
+  }, [effectiveSelectedIds])
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
   const closeEmptyRowContextMenu = useCallback(() => setEmptyRowContextMenu(null), [])
@@ -3775,9 +3796,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             const taskId = contextMenu.taskId
             closeContextMenu()
             // If the right-clicked task is part of a multi-selection, delete all selected rows.
+            // effectiveSelectedIds covers both row-click and cell-drag selections.
             // Otherwise delete just the right-clicked task.
-            if (selectedRowIds.has(taskId) && selectedRowIds.size > 1) {
-              const idsToDelete = [...selectedRowIds]
+            if (effectiveSelectedIds.has(taskId) && effectiveSelectedIds.size > 1) {
+              const idsToDelete = [...effectiveSelectedIds]
               void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
                 setSelectedRowIds(new Set())
                 setSelectedRowId(null)
@@ -3803,9 +3825,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             const taskId = contextMenu.taskId
             closeContextMenu()
             // If the right-clicked task is part of a multi-selection, delete all selected rows.
+            // effectiveSelectedIds covers both row-click and cell-drag selections.
             // Otherwise delete just the right-clicked task.
-            if (selectedRowIds.has(taskId) && selectedRowIds.size > 1) {
-              const idsToDelete = [...selectedRowIds]
+            if (effectiveSelectedIds.has(taskId) && effectiveSelectedIds.size > 1) {
+              const idsToDelete = [...effectiveSelectedIds]
               void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
                 setSelectedRowIds(new Set())
                 setSelectedRowId(null)
