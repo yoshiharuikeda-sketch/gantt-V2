@@ -51,6 +51,8 @@ export function GanttBar({
 
   const fmtDate = (d: string | null) => d ? format(parseISO(d), 'yyyy/MM/dd') : '-'
 
+  const isMilestone = displayStart === displayEnd
+
   const hasBaseline = Boolean(task.baseline?.start_date && task.baseline?.end_date)
   const baselineX = hasBaseline
     ? getBarX(task.baseline!.start_date!, timelineStart, dayWidth)
@@ -58,6 +60,41 @@ export function GanttBar({
   const baselineWidth = hasBaseline
     ? getBarWidth(task.baseline!.start_date!, task.baseline!.end_date!, dayWidth)
     : 0
+
+  if (isMilestone) {
+    const diamondSize = 14
+    const centerX = x + dayWidth / 2
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div
+              className={`absolute ${canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:brightness-110 ${isDragging ? 'opacity-80 z-20' : ''}`}
+              style={{
+                left: centerX - diamondSize / 2,
+                top: '50%',
+                transform: 'translateY(-50%) rotate(45deg)',
+                width: diamondSize,
+                height: diamondSize,
+                backgroundColor: '#f59e0b',
+                zIndex: 2,
+                transition: isDragging ? 'none' : undefined,
+              }}
+              onMouseDown={canEdit ? (e) => onDragStart(e, task, 'move') : undefined}
+            />
+          }
+        >
+          <TooltipContent side="top">
+            <div className="text-xs space-y-0.5">
+              <p className="font-semibold">{task.name}</p>
+              <p>{fmtDate(displayStart)}</p>
+              <p>進捗: {task.progress}%</p>
+            </div>
+          </TooltipContent>
+        </TooltipTrigger>
+      </Tooltip>
+    )
+  }
 
   return (
     <>
