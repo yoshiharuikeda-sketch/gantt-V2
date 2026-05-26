@@ -1614,6 +1614,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       updated_at: now,
     }
     upsertTask(tempTask)
+    // Move selection to the next empty row immediately (optimistic navigation),
+    // before the API call completes.
+    setSelectedEmptyRow({ rowIndex: 0, col: 'name' })
+    setExtraEmptyRows((n) => n + 1)
+    gridRef.current?.focus()
 
     try {
       const res = await fetch('/api/tasks', {
@@ -1641,12 +1646,6 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       // Replace the temp task with the real one from the server
       removeTask(tempId)
       upsertTask(json.data)
-      // Move selection to the next empty row after submission.
-      // setSelectedEmptyRow creates a new object reference, so the EmptyRow's
-      // useEffect([currentSelection]) will fire and focus the hidden input automatically.
-      setSelectedEmptyRow({ rowIndex: 0, col: 'name' })
-      setExtraEmptyRows((n) => n + 1)
-      gridRef.current?.focus()
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
