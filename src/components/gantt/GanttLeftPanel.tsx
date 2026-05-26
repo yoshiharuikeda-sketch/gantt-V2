@@ -293,6 +293,50 @@ function PhaseRow({
   )
 }
 
+// ─── DatePickerButton ─────────────────────────────────────────────────────────
+
+/** Calendar icon + hidden date input overlay. Shown at the right edge of a selected date cell. */
+function DatePickerButton({
+  currentValue,
+  onCommit,
+}: {
+  currentValue: string | null | undefined
+  onCommit: (dateVal: string) => void
+}) {
+  const hiddenRef = useRef<HTMLInputElement>(null)
+  return (
+    <div style={{ position: 'absolute', right: 0, top: 0, height: '100%', display: 'flex', alignItems: 'center', pointerEvents: 'none' }}>
+      <button
+        tabIndex={-1}
+        style={{ pointerEvents: 'auto', padding: '0 4px', background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1, fontSize: 12, color: '#6366f1', display: 'flex', alignItems: 'center' }}
+        onMouseDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          hiddenRef.current?.showPicker?.()
+          hiddenRef.current?.click()
+        }}
+        title="日付を選択"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="1" y="3" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M1 7h14" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M5 1v4M11 1v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </button>
+      <input
+        ref={hiddenRef}
+        type="date"
+        tabIndex={-1}
+        style={{ position: 'absolute', right: 0, top: 0, width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
+        value={currentValue ?? ''}
+        onChange={(e) => {
+          if (e.target.value) onCommit(e.target.value)
+        }}
+      />
+    </div>
+  )
+}
+
 // ─── TaskRow ──────────────────────────────────────────────────────────────────
 
 interface TaskRowProps {
@@ -337,6 +381,8 @@ interface TaskRowProps {
   onHiddenInputChange?: (taskId: string, col: GanttColKey, value: string) => void
   onHiddenInputKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>, taskId: string, col: GanttColKey) => void
   onHiddenInputBlur?: (taskId: string, col: GanttColKey) => void
+  /** Called when the user picks a date via the calendar icon on a date cell */
+  onDatePickerCommit?: (task: TaskWithBaseline, col: 'start_date' | 'end_date', dateVal: string) => void
 }
 
 function TaskRow({
@@ -379,6 +425,7 @@ function TaskRow({
   onHiddenInputChange,
   onHiddenInputKeyDown,
   onHiddenInputBlur,
+  onDatePickerCommit,
 }: TaskRowProps) {
   const baseRowBg = isSelected
     ? 'bg-indigo-100'
@@ -447,8 +494,8 @@ function TaskRow({
               width: colWidths[col],
               height: '100%',
               paddingLeft: colIdx === 0 ? 8 + indentPx : 8,
-              paddingRight: 8,
-              position: col === 'name' ? 'relative' : undefined,
+              paddingRight: (col === 'start_date' || col === 'end_date') && isSelected_ ? 22 : 8,
+              position: (col === 'name' || col === 'start_date' || col === 'end_date') ? 'relative' : undefined,
             }}
             onMouseDown={(e) => {
               if (col === 'updated_at') return
@@ -494,13 +541,7 @@ function TaskRow({
             ) : isEditing ? (
               <input
                 autoFocus
-                type={
-                  col === 'progress'
-                    ? 'number'
-                    : (col === 'start_date' || col === 'end_date') && !activeCell?.fromKey
-                      ? 'date'
-                      : 'text'
-                }
+                type={col === 'progress' ? 'number' : 'text'}
                 min={col === 'progress' ? 0 : undefined}
                 max={col === 'progress' ? 100 : undefined}
                 value={editValue}
@@ -515,9 +556,7 @@ function TaskRow({
                   onKeyDown(e, task, col)
                 }}
                 placeholder={
-                  (col === 'start_date' || col === 'end_date') && activeCell?.fromKey
-                    ? 'yyyymmdd'
-                    : undefined
+                  (col === 'start_date' || col === 'end_date') ? 'yyyymmdd' : undefined
                 }
                 className="w-full text-xs bg-transparent border-none outline-none"
                 onClick={(e) => {
@@ -570,6 +609,13 @@ function TaskRow({
                     onChange={(e) => onHiddenInputChange?.(task.id, col, e.target.value)}
                     onKeyDown={(e) => onHiddenInputKeyDown?.(e, task.id, col)}
                     onBlur={() => onHiddenInputBlur?.(task.id, col)}
+                  />
+                )}
+                {/* カレンダーアイコンボタン（日付列・選択時のみ） */}
+                {(col === 'start_date' || col === 'end_date') && isSelected_ && onDatePickerCommit && (
+                  <DatePickerButton
+                    currentValue={col === 'start_date' ? task.start_date : task.end_date}
+                    onCommit={(dateVal) => onDatePickerCommit(task, col, dateVal)}
                   />
                 )}
               </>
@@ -1498,6 +1544,12 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     if (!activeCell) return Promise.resolve()
     return commitEditWithValues(activeCell, editValue, task)
   }, [activeCell, editValue, commitEditWithValues])
+
+  // Called when the user picks a date via the calendar icon on a selected date cell
+  const handleDatePickerCommit = useCallback((task: TaskWithBaseline, col: 'start_date' | 'end_date', dateVal: string) => {
+    const fakeCell: ActiveCell = { taskId: task.id, col, fromKey: false }
+    void commitEditWithValues(fakeCell, dateVal, task)
+  }, [commitEditWithValues])
 
   const cancelEdit = useCallback(() => {
     // 編集キャンセル後は選択状態（ハイライト）に戻す
@@ -3693,6 +3745,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
                 onHiddenInputChange={handleHiddenInputChange}
                 onHiddenInputKeyDown={handleHiddenInputKeyDown}
                 onHiddenInputBlur={handleHiddenInputBlur}
+                onDatePickerCommit={handleDatePickerCommit}
               />
             )
           })}
