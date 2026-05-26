@@ -1521,6 +1521,31 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       : null
     const lastPhaseId = lastPhase?.id ?? null
 
+    // Optimistic update: add a temporary task immediately so the UI responds without waiting for the API
+    const tempId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const tempTask: Task = {
+      id: tempId,
+      project_id: currentProject.id,
+      phase_id: lastPhaseId,
+      parent_task_id: null,
+      name: trimmed,
+      description: null,
+      assignee_id: null,
+      vendor_id: null,
+      start_date: null,
+      end_date: null,
+      progress: 0,
+      status: 'not_started',
+      display_order: storeTasks.length,
+      dependencies: [],
+      version: 1,
+      updated_by: null,
+      created_at: now,
+      updated_at: now,
+    }
+    upsertTask(tempTask)
+
     try {
       const res = await fetch('/api/tasks', {
         method: 'POST',
@@ -1538,11 +1563,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       if (!res.ok) {
         const json = await res.json() as { error?: string }
         console.error('Failed to create task:', json.error)
+        removeTask(tempId)
         committingRef.current = false
         return
       }
 
       const json = await res.json() as { data: Task }
+      // Replace the temp task with the real one from the server
+      removeTask(tempId)
       upsertTask(json.data)
       // Move selection to the next empty row after submission.
       // setSelectedEmptyRow creates a new object reference, so the EmptyRow's
@@ -1553,9 +1581,10 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
+      removeTask(tempId)
       committingRef.current = false
     }
-  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask, editingEmptyRowIndex])
+  }, [emptyRowValue, currentProject, phases, storeTasks.length, upsertTask, removeTask, editingEmptyRowIndex])
 
   const cancelEmptyRow = useCallback(() => {
     setEditingEmptyRowIndex(null)
