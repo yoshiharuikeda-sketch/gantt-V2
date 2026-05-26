@@ -787,6 +787,18 @@ function ContextMenu({
   onDelete,
   onDeleteRow,
 }: ContextMenuProps) {
+  // Clamp to viewport so the menu doesn't overflow off-screen
+  const [pos, setPos] = useState({ left: x, top: y })
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuRef.current) return
+    const { offsetWidth, offsetHeight } = menuRef.current
+    const left = Math.min(x, window.innerWidth - offsetWidth - 8)
+    const top = Math.min(y, window.innerHeight - offsetHeight - 8)
+    setPos({ left, top })
+  }, [x, y])
+
   type MenuItem = {
     label: string
     shortcut?: string
@@ -819,8 +831,9 @@ function ContextMenu({
 
   return (
     <div
+      ref={menuRef}
       className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
-      style={{ left: x, top: y }}
+      style={{ left: pos.left, top: pos.top }}
       // Prevent the document click handler from firing immediately for this element
       onClick={(e) => e.stopPropagation()}
     >
@@ -859,6 +872,18 @@ function PhaseContextMenu({ x, y, canEdit, isUnassigned, onRename, onDelete, onC
   x: number; y: number; canEdit: boolean; isUnassigned: boolean
   onRename: () => void; onDelete: () => void; onConvertToTask: () => void
 }) {
+  // Clamp to viewport so the menu doesn't overflow off-screen
+  const [pos, setPos] = useState({ left: x, top: y })
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuRef.current) return
+    const { offsetWidth, offsetHeight } = menuRef.current
+    const left = Math.min(x, window.innerWidth - offsetWidth - 8)
+    const top = Math.min(y, window.innerHeight - offsetHeight - 8)
+    setPos({ left, top })
+  }, [x, y])
+
   const items = [
     { label: 'フェーズ名を変更', onClick: onRename, disabled: !canEdit || isUnassigned },
     { label: 'タスクに戻す', onClick: onConvertToTask, disabled: !canEdit || isUnassigned },
@@ -866,8 +891,9 @@ function PhaseContextMenu({ x, y, canEdit, isUnassigned, onRename, onDelete, onC
   ]
   return (
     <div
+      ref={menuRef}
       className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
-      style={{ left: x, top: y }}
+      style={{ left: pos.left, top: pos.top }}
       onClick={(e) => e.stopPropagation()}
     >
       {items.map((item, i) => (
@@ -878,6 +904,49 @@ function PhaseContextMenu({ x, y, canEdit, isUnassigned, onRename, onDelete, onC
           {item.label}
         </button>
       ))}
+    </div>
+  )
+}
+
+// ─── EmptyRowContextMenu ─────────────────────────────────────────────────────
+
+function EmptyRowContextMenu({ x, y, rowIndex, onAddTask, onPaste }: {
+  x: number; y: number; rowIndex: number
+  onAddTask: (rowIndex: number) => void
+  onPaste: (rowIndex: number) => void
+}) {
+  // Clamp to viewport so the menu does not overflow off-screen
+  const [pos, setPos] = useState({ left: x, top: y })
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuRef.current) return
+    const { offsetWidth, offsetHeight } = menuRef.current
+    const left = Math.min(x, window.innerWidth - offsetWidth - 8)
+    const top = Math.min(y, window.innerHeight - offsetHeight - 8)
+    setPos({ left, top })
+  }, [x, y])
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
+      style={{ left: pos.left, top: pos.top }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        onClick={() => onAddTask(rowIndex)}
+        className="w-full flex items-center px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
+      >
+        タスクを追加
+      </button>
+      <button
+        onClick={() => onPaste(rowIndex)}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
+      >
+        <span>貼り付け</span>
+        <span className="ml-4 text-slate-400">Ctrl+V</span>
+      </button>
     </div>
   )
 }
@@ -2366,11 +2435,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const deleteRowWithReorder = useCallback(async (taskId: string) => {
     if (!currentProject) return
 
+    const foundTask = tasks.find((t) => t.id === taskId)
+
     const res = await fetch(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
     if (!res.ok) {
       const json = await res.json() as { error?: string }
       console.error('Failed to delete task:', json.error)
       return
+    }
+
+    if (foundTask) {
+      pushCommand({ type: 'delete_task', task: foundTask })
     }
 
     removeTask(taskId)
@@ -2397,7 +2472,7 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
     setSelectedRowIds((prev) => { const n = new Set(prev); n.delete(taskId); return n })
     setSelectionAnchor(null)
     setSelectionHead(null)
-  }, [currentProject, tasks, removeTask, reorderTasks])
+  }, [currentProject, tasks, removeTask, reorderTasks, pushCommand])
 
   const insertRow = useCallback(async (relativeToTaskId: string, position: 'above' | 'below') => {
     if (!currentProject) return
@@ -3339,6 +3414,20 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           }
           return
         }
+        // Delete/Backspace alone with multiple rows selected (no cell range):
+        // delete all selected rows instead of clearing cell content.
+        if (selectedRowIds.size > 1 && !selectionRange && permissions?.canEdit) {
+          e.preventDefault()
+          const idsToDelete = [...selectedRowIds]
+          void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
+            setSelectedRowIds(new Set())
+            setSelectedRowId(null)
+            setSelectedCell(null)
+            setSelectionAnchor(null)
+            setSelectionHead(null)
+          })
+          return
+        }
         // Delete/Backspace alone: clear the selected cell(s)
         e.preventDefault()
         void handleCellDelete()
@@ -3685,20 +3774,30 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           onDelete={() => {
             const taskId = contextMenu.taskId
             closeContextMenu()
-            // Call deleteSingleRow directly to bypass multi-selection logic entirely,
-            // ensuring the right-clicked task is always the one deleted.
-            void deleteSingleRow(taskId).then((success) => {
-              if (success) {
-                setSelectedRowId((prev) => prev === taskId ? null : prev)
-                setSelectedRowIds((prev) => {
-                  const next = new Set(prev)
-                  next.delete(taskId)
-                  return next
-                })
+            // If the right-clicked task is part of a multi-selection, delete all selected rows.
+            // Otherwise delete just the right-clicked task.
+            if (selectedRowIds.has(taskId) && selectedRowIds.size > 1) {
+              const idsToDelete = [...selectedRowIds]
+              void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
+                setSelectedRowIds(new Set())
+                setSelectedRowId(null)
                 setSelectionAnchor(null)
                 setSelectionHead(null)
-              }
-            })
+              })
+            } else {
+              void deleteSingleRow(taskId).then((success) => {
+                if (success) {
+                  setSelectedRowId((prev) => prev === taskId ? null : prev)
+                  setSelectedRowIds((prev) => {
+                    const next = new Set(prev)
+                    next.delete(taskId)
+                    return next
+                  })
+                  setSelectionAnchor(null)
+                  setSelectionHead(null)
+                }
+              })
+            }
           }}
           onDeleteRow={() => {
             const taskId = contextMenu.taskId
@@ -3731,41 +3830,23 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       )}
 
       {emptyRowContextMenu != null && (
-        <div
-          className="fixed z-50 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[180px]"
-          style={{ left: emptyRowContextMenu.x, top: emptyRowContextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={() => {
-              const rowIndex = emptyRowContextMenu.rowIndex
-              closeEmptyRowContextMenu()
-              setEditingEmptyRowIndex(rowIndex)
-              setEmptyRowValue('')
-              setSelectedEmptyRow(null)
-            }}
-            className="w-full flex items-center px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
-          >
-            タスクを追加
-          </button>
-          {(() => {
-            const rowIndex = emptyRowContextMenu.rowIndex
-            return (
-              <button
-                onClick={() => {
-                  closeEmptyRowContextMenu()
-                  navigator.clipboard.readText().then((t) => void doPasteIntoEmpty(t, rowIndex)).catch(() => {
-                    // Cannot read OS clipboard; silently ignore
-                  })
-                }}
-                className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-left text-slate-700 hover:bg-indigo-50 cursor-pointer"
-              >
-                <span>貼り付け</span>
-                <span className="ml-4 text-slate-400">Ctrl+V</span>
-              </button>
-            )
-          })()}
-        </div>
+        <EmptyRowContextMenu
+          x={emptyRowContextMenu.x}
+          y={emptyRowContextMenu.y}
+          rowIndex={emptyRowContextMenu.rowIndex}
+          onAddTask={(rowIndex) => {
+            closeEmptyRowContextMenu()
+            setEditingEmptyRowIndex(rowIndex)
+            setEmptyRowValue('')
+            setSelectedEmptyRow(null)
+          }}
+          onPaste={(rowIndex) => {
+            closeEmptyRowContextMenu()
+            navigator.clipboard.readText().then((t) => void doPasteIntoEmpty(t, rowIndex)).catch(() => {
+              // Cannot read OS clipboard; silently ignore
+            })
+          }}
+        />
       )}
     </>
   )

@@ -4,12 +4,18 @@ import { useRef, useEffect, useCallback, useState } from 'react'
 import { useTaskStore } from '@/store/taskStore'
 import type { Task, TaskStatus } from '@/types'
 
-export type UndoCommand = {
-  taskId: string
-  field: string
-  before: string | number | null
-  after: string | number | null
-}
+export type UndoCommand =
+  | {
+      type?: never
+      taskId: string
+      field: string
+      before: string | number | null
+      after: string | number | null
+    }
+  | {
+      type: 'delete_task'
+      task: Task
+    }
 
 type ApplyPatchFn = (taskId: string, field: string, value: string | number | null) => Promise<void>
 
@@ -23,6 +29,7 @@ type ApplyPatchFn = (taskId: string, field: string, value: string | number | nul
  */
 export function useUndoRedo(isEditing: () => boolean) {
   const upsertTask = useTaskStore((s) => s.upsertTask)
+  const removeTask = useTaskStore((s) => s.removeTask)
   const undoStack = useRef<UndoCommand[]>([])
   const redoStack = useRef<UndoCommand[]>([])
   // Reactive counters so callers can derive canUndo / canRedo for button disabled state
@@ -92,6 +99,38 @@ export function useUndoRedo(isEditing: () => boolean) {
     }
   }, [upsertTask])
 
+  // Apply a delete_task command in the undo direction (restore task) or redo direction (re-delete)
+  const applyDeleteTask = useCallback(async (task: Task, direction: 'undo' | 'redo') => {
+    if (direction === 'undo') {
+      // Recreate the task via POST
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(task),
+        })
+        if (res.ok) {
+          const json = await res.json() as { data: Task }
+          upsertTask(json.data)
+        } else {
+          // Best effort: restore in store even if API fails
+          upsertTask(task)
+        }
+      } catch {
+        upsertTask(task)
+      }
+    } else {
+      // Re-delete the task
+      removeTask(task.id)
+      try {
+        await fetch(`/api/tasks?id=${encodeURIComponent(task.id)}`, { method: 'DELETE' })
+      } catch {
+        // If re-delete fails, put it back
+        upsertTask(task)
+      }
+    }
+  }, [upsertTask, removeTask])
+
   /** Push a new command onto the undo stack and clear the redo stack. */
   const pushCommand = useCallback((cmd: UndoCommand) => {
     undoStack.current = [...undoStack.current.slice(-19), cmd] // keep ≤20
@@ -109,8 +148,12 @@ export function useUndoRedo(isEditing: () => boolean) {
     redoStack.current = [...redoStack.current.slice(-19), cmd]
     setUndoCount(undoStack.current.length)
     setRedoCount(redoStack.current.length)
-    void applyPatch(cmd.taskId, cmd.field, cmd.before)
-  }, [applyPatch, isEditing])
+    if ('type' in cmd && cmd.type === 'delete_task') {
+      void applyDeleteTask(cmd.task, 'undo')
+    } else {
+      void applyPatch(cmd.taskId, cmd.field, cmd.before)
+    }
+  }, [applyPatch, applyDeleteTask, isEditing])
 
   /** Redo the last undone command programmatically (also called by Cmd+Shift+Z handler). */
   const redo = useCallback(() => {
@@ -121,8 +164,12 @@ export function useUndoRedo(isEditing: () => boolean) {
     undoStack.current = [...undoStack.current.slice(-19), cmd]
     setUndoCount(undoStack.current.length)
     setRedoCount(redoStack.current.length)
-    void applyPatch(cmd.taskId, cmd.field, cmd.after)
-  }, [applyPatch, isEditing])
+    if ('type' in cmd && cmd.type === 'delete_task') {
+      void applyDeleteTask(cmd.task, 'redo')
+    } else {
+      void applyPatch(cmd.taskId, cmd.field, cmd.after)
+    }
+  }, [applyPatch, applyDeleteTask, isEditing])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -141,7 +188,11 @@ export function useUndoRedo(isEditing: () => boolean) {
         undoStack.current = [...undoStack.current.slice(-19), cmd]
         setUndoCount(undoStack.current.length)
         setRedoCount(redoStack.current.length)
-        void applyPatch(cmd.taskId, cmd.field, cmd.after)
+        if ('type' in cmd && cmd.type === 'delete_task') {
+          void applyDeleteTask(cmd.task, 'redo')
+        } else {
+          void applyPatch(cmd.taskId, cmd.field, cmd.after)
+        }
       } else {
         // Cmd+Z → Undo
         const cmd = undoStack.current[undoStack.current.length - 1]
@@ -151,7 +202,11 @@ export function useUndoRedo(isEditing: () => boolean) {
         redoStack.current = [...redoStack.current.slice(-19), cmd]
         setUndoCount(undoStack.current.length)
         setRedoCount(redoStack.current.length)
-        void applyPatch(cmd.taskId, cmd.field, cmd.before)
+        if ('type' in cmd && cmd.type === 'delete_task') {
+          void applyDeleteTask(cmd.task, 'undo')
+        } else {
+          void applyPatch(cmd.taskId, cmd.field, cmd.before)
+        }
       }
     }
 
@@ -159,7 +214,7 @@ export function useUndoRedo(isEditing: () => boolean) {
     return () => document.removeEventListener('keydown', handler)
     // isEditing is a stable ref-based getter so it needn't be in the dep array
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyPatch])
+  }, [applyPatch, applyDeleteTask])
 
   return {
     pushCommand,

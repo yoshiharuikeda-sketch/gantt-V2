@@ -810,6 +810,9 @@ export function TaskSheet() {
 
       const hasChildren = storeTasks.some((t) => t.parent_task_id === rowId)
 
+      // Record deletion for undo before removing from store
+      pushCommand({ type: 'delete_task', task })
+
       // Optimistic removal
       removeTask(rowId)
       if (hasChildren) {
@@ -829,7 +832,7 @@ export function TaskSheet() {
 
       if (selectedCell?.rowId === rowId) setSelectedCell(null)
     },
-    [tasks, storeTasks, canEditTask, removeTask, upsertTask, selectedCell],
+    [tasks, storeTasks, canEditTask, removeTask, upsertTask, selectedCell, pushCommand],
   )
 
   const handleNewTask = useCallback(
