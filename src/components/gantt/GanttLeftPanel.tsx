@@ -66,6 +66,18 @@ function fmtDate(val: string | null | undefined): string {
   try { return format(parseISO(val), 'yy/MM/dd') } catch { return '-' }
 }
 
+// Normalize various date input formats to yyyy-MM-dd (ISO date string).
+// Accepts: yyyymmdd, yyyy/mm/dd, yyyy-mm-dd, and full-width digit variants.
+function normalizeDateInput(raw: string): string {
+  // Convert full-width digits (０-９) to half-width (0-9)
+  const s = raw.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).trim()
+  // yyyymmdd → yyyy-mm-dd
+  if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+  // yyyy/mm/dd → yyyy-mm-dd
+  if (/^\d{4}\/\d{2}\/\d{2}$/.test(s)) return s.replace(/\//g, '-')
+  return s
+}
+
 // Returns the raw editable value for a task cell
 function getRawValue(task: TaskWithBaseline, col: GanttColKey): string {
   switch (col) {
@@ -482,7 +494,13 @@ function TaskRow({
             ) : isEditing ? (
               <input
                 autoFocus
-                type={col === 'progress' ? 'number' : col === 'start_date' || col === 'end_date' ? 'date' : 'text'}
+                type={
+                  col === 'progress'
+                    ? 'number'
+                    : (col === 'start_date' || col === 'end_date') && !activeCell?.fromKey
+                      ? 'date'
+                      : 'text'
+                }
                 min={col === 'progress' ? 0 : undefined}
                 max={col === 'progress' ? 100 : undefined}
                 value={editValue}
@@ -496,6 +514,11 @@ function TaskRow({
                   if (e.key === 'Escape') { e.preventDefault(); onCancelEdit(); return }
                   onKeyDown(e, task, col)
                 }}
+                placeholder={
+                  (col === 'start_date' || col === 'end_date') && activeCell?.fromKey
+                    ? 'yyyymmdd'
+                    : undefined
+                }
                 className="w-full text-xs bg-transparent border-none outline-none"
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1422,13 +1445,15 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         payload.name = trimmed
       }
     } else if (field === 'start_date') {
+      const normalized = currentValue ? normalizeDateInput(currentValue) : ''
       beforeValue = task.start_date
-      afterValue = currentValue || null
-      payload.start_date = currentValue || null
+      afterValue = normalized || null
+      payload.start_date = normalized || null
     } else if (field === 'end_date') {
+      const normalized = currentValue ? normalizeDateInput(currentValue) : ''
       beforeValue = task.end_date
-      afterValue = currentValue || null
-      payload.end_date = currentValue || null
+      afterValue = normalized || null
+      payload.end_date = normalized || null
     } else if (field === 'progress') {
       const n = parseInt(currentValue, 10)
       if (!isNaN(n)) {
@@ -3219,7 +3244,17 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         openCell(task as TaskWithBaseline, selectedCell.col)
       } else {
         e.preventDefault()
-        openCell(task as TaskWithBaseline, selectedCell.col, e.key)
+        const isDateCol = selectedCell.col === 'start_date' || selectedCell.col === 'end_date'
+        if (isDateCol) {
+          // For date columns: only accept digit keys (half-width or full-width)
+          const halfWidth = e.key.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+          if (/^\d$/.test(halfWidth)) {
+            openCell(task as TaskWithBaseline, selectedCell.col, halfWidth)
+          }
+          // Non-digit keys on date cells are silently ignored in key-press path
+        } else {
+          openCell(task as TaskWithBaseline, selectedCell.col, e.key)
+        }
       }
       return
     }
