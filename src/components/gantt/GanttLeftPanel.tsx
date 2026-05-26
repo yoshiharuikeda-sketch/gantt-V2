@@ -299,9 +299,13 @@ function PhaseRow({
 function DatePickerButton({
   currentValue,
   onCommit,
+  minDate,
+  maxDate,
 }: {
   currentValue: string | null | undefined
   onCommit: (dateVal: string) => void
+  minDate?: string
+  maxDate?: string
 }) {
   const hiddenRef = useRef<HTMLInputElement>(null)
   return (
@@ -329,6 +333,8 @@ function DatePickerButton({
         tabIndex={-1}
         style={{ position: 'absolute', right: 0, top: 0, width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
         value={currentValue ?? ''}
+        min={minDate}
+        max={maxDate}
         onChange={(e) => {
           if (e.target.value) onCommit(e.target.value)
         }}
@@ -616,6 +622,8 @@ function TaskRow({
                   <DatePickerButton
                     currentValue={col === 'start_date' ? task.start_date : task.end_date}
                     onCommit={(dateVal) => onDatePickerCommit(task, col, dateVal)}
+                    minDate={col === 'end_date' ? (task.start_date ?? undefined) : undefined}
+                    maxDate={col === 'start_date' ? (task.end_date ?? undefined) : undefined}
                   />
                 )}
               </>
@@ -1492,11 +1500,21 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
     } else if (field === 'start_date') {
       const normalized = currentValue ? normalizeDateInput(currentValue) : ''
+      // Reject if start_date would be after task's existing end_date
+      if (normalized && task.end_date && normalized > task.end_date) {
+        committingRef.current = false
+        return
+      }
       beforeValue = task.start_date
       afterValue = normalized || null
       payload.start_date = normalized || null
     } else if (field === 'end_date') {
       const normalized = currentValue ? normalizeDateInput(currentValue) : ''
+      // Reject if end_date would be before task's existing start_date
+      if (normalized && task.start_date && normalized < task.start_date) {
+        committingRef.current = false
+        return
+      }
       beforeValue = task.end_date
       afterValue = normalized || null
       payload.end_date = normalized || null
