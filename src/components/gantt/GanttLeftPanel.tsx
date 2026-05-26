@@ -3440,13 +3440,16 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         if (selectedRowIds.size > 1 && !selectionRange && permissions?.canEdit) {
           e.preventDefault()
           const idsToDelete = [...selectedRowIds]
-          void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
-            setSelectedRowIds(new Set())
-            setSelectedRowId(null)
-            setSelectedCell(null)
-            setSelectionAnchor(null)
-            setSelectionHead(null)
-          })
+          // Optimistically remove all tasks from store immediately
+          idsToDelete.forEach((id) => removeTask(id))
+          setSelectedRowIds(new Set())
+          setSelectedRowId(null)
+          setSelectedCell(null)
+          setSelectionAnchor(null)
+          setSelectionHead(null)
+          // Fire API deletes in parallel (deleteRowWithReorder will call removeTask again,
+          // but that is idempotent — filtering a non-existent id is a no-op)
+          void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id)))
           return
         }
         // Delete/Backspace alone: clear the selected cell(s)
@@ -3800,12 +3803,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             // Otherwise delete just the right-clicked task.
             if (effectiveSelectedIds.has(taskId) && effectiveSelectedIds.size > 1) {
               const idsToDelete = [...effectiveSelectedIds]
-              void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
-                setSelectedRowIds(new Set())
-                setSelectedRowId(null)
-                setSelectionAnchor(null)
-                setSelectionHead(null)
-              })
+              // Optimistically remove all tasks from store immediately
+              idsToDelete.forEach((id) => removeTask(id))
+              setSelectedRowIds(new Set())
+              setSelectedRowId(null)
+              setSelectionAnchor(null)
+              setSelectionHead(null)
+              // Fire API deletes in parallel (removeTask calls inside deleteRowWithReorder are idempotent)
+              void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id)))
             } else {
               void deleteSingleRow(taskId).then((success) => {
                 if (success) {
@@ -3829,12 +3834,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
             // Otherwise delete just the right-clicked task.
             if (effectiveSelectedIds.has(taskId) && effectiveSelectedIds.size > 1) {
               const idsToDelete = [...effectiveSelectedIds]
-              void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id))).then(() => {
-                setSelectedRowIds(new Set())
-                setSelectedRowId(null)
-                setSelectionAnchor(null)
-                setSelectionHead(null)
-              })
+              // Optimistically remove all tasks from store immediately
+              idsToDelete.forEach((id) => removeTask(id))
+              setSelectedRowIds(new Set())
+              setSelectedRowId(null)
+              setSelectionAnchor(null)
+              setSelectionHead(null)
+              // Fire API deletes in parallel (removeTask calls inside deleteRowWithReorder are idempotent)
+              void Promise.all(idsToDelete.map((id) => deleteRowWithReorder(id)))
             } else {
               void deleteRowWithReorder(taskId)
             }
