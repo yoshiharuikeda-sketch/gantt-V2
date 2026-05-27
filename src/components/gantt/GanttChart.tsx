@@ -30,38 +30,47 @@ const MIN_ROWS = 30
 /**
  * Build a map from taskId → visual row index, accounting for phase header rows.
  * This must mirror the row-building logic in GanttLeftPanel so bar positions align.
- * collapsedPhaseIds: phases whose task rows are hidden (tasks are skipped in the map).
+ *
+ * The logic replicates the `rows` useMemo in GanttLeftPanel exactly:
+ * - Tasks are walked in display_order.
+ * - A phase header row is emitted the FIRST TIME a task belonging to that phase is
+ *   encountered (interleaved ordering), NOT by iterating phases sorted by display_order.
+ * - Unassigned tasks (phase_id === null) are emitted INLINE with no phase header row.
+ * - Empty phases (no tasks) are appended at the end sorted by display_order.
+ * - Collapsed phases contribute only their header row; their task rows are omitted.
  */
 function buildTaskRowMap(
   tasks: TaskWithBaseline[],
   phases: { id: string; display_order: number }[],
   collapsedPhaseIds: Set<string>,
 ): Map<string, number> {
-  const sortedPhases = [...phases].sort((a, b) => a.display_order - b.display_order)
   const rowMap = new Map<string, number>()
   let row = 0
 
-  for (const phase of sortedPhases) {
-    const phaseTasks = tasks.filter((t) => t.phase_id === phase.id)
-    row++ // phase header row
-    if (!collapsedPhaseIds.has(phase.id)) {
-      for (const task of phaseTasks) {
+  const sortedTasks = [...tasks].sort((a, b) => a.display_order - b.display_order)
+  const emittedPhaseIds = new Set<string>()
+
+  for (const task of sortedTasks) {
+    if (task.phase_id !== null) {
+      if (!emittedPhaseIds.has(task.phase_id)) {
+        emittedPhaseIds.add(task.phase_id)
+        row++ // phase header row
+      }
+      if (!collapsedPhaseIds.has(task.phase_id)) {
         rowMap.set(task.id, row)
         row++
       }
+    } else {
+      // Unassigned tasks: no phase header, emitted inline
+      rowMap.set(task.id, row)
+      row++
     }
   }
 
-  const unassigned = tasks.filter((t) => t.phase_id === null)
-  if (unassigned.length > 0) {
-    row++ // unassigned phase header row
-    if (!collapsedPhaseIds.has('__unassigned__')) {
-      for (const task of unassigned) {
-        rowMap.set(task.id, row)
-        row++
-      }
-    }
-  }
+  // Empty phases (no tasks) are appended at the end, sorted by display_order.
+  // Each contributes one header row (no task rows follow).
+  const emptyPhaseCount = phases.filter((p) => !emittedPhaseIds.has(p.id)).length
+  row += emptyPhaseCount
 
   return rowMap
 }
@@ -327,12 +336,14 @@ export function GanttChart() {
 
   // Total visual rows = phase headers + visible task rows + empty padding rows
   // Collapsed phases contribute only their header row (tasks are hidden).
+  // Phase header count mirrors buildTaskRowMap / GanttLeftPanel rows useMemo:
+  // - one header per phase (all phases show a header, either interleaved or appended)
+  // - NO separate header for unassigned tasks (phase_id === null); they are emitted inline
   const { phaseHeaderCount, visibleTaskCount } = useMemo(() => {
-    let headerCount = phases.length
-    const hasUnassigned = displayRows.tasks.some((t) => t.phase_id === null)
-    if (hasUnassigned) headerCount++
+    const headerCount = phases.length
 
-    // Count tasks that belong to non-collapsed phases
+    // Count tasks that belong to non-collapsed phases.
+    // Unassigned tasks use '__unassigned__' as a virtual phase key (can be collapsed).
     let visibleCount = 0
     for (const task of displayRows.tasks) {
       const phaseId = task.phase_id ?? '__unassigned__'
