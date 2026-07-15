@@ -1591,9 +1591,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
     e.preventDefault()
 
-    // commit is triggered by blur (Tab moves focus away), avoid double-fire
     if (e.key === 'Tab') {
-      // blur will fire commitEdit; after that we navigate
+      // e.preventDefault() でフォーカス移動を止めているため blur は発火しない。
+      // Enter と同様に明示的にコミットしてから移動する（保存を待たずに即移動）。
+      // これをしないと openCell で別セルを開いた瞬間に入力値が保存されず消える。
+      void commitEdit(task)
       const editableCols = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
       const colIdx = editableCols.indexOf(col)
       const backward = e.shiftKey
@@ -1635,33 +1637,29 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
       }
     } else {
       // Enter: commit then move to same column next row (選択状態のみ・編集モードには入らない)
-      void commitEdit(task).then(() => {
-        const orderedIds = displayedTaskIdsRef.current
-        const taskIdx = orderedIds.indexOf(task.id)
-        if (taskIdx < orderedIds.length - 1) {
-          const nextTaskId = orderedIds[taskIdx + 1]
-          const nextTask = tasks.find((t) => t.id === nextTaskId)
-          if (nextTask) {
-            setTimeout(() => {
-              setSelectedCell({ taskId: nextTask.id, col })
-              setSelectedRowId(nextTask.id)
-              setSelectedRowIds(new Set([nextTask.id]))
-              gridRef.current?.focus()
-            }, 0)
-          }
-        } else {
-          // Last task: move to first empty row in selected state (not edit mode),
-          // mirroring the behavior of Enter from a selected (non-editing) task.
-          const editableCols = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
-          setTimeout(() => {
-            setSelectedCell(null)
-            setSelectedRowId(null)
-            setSelectedRowIds(new Set())
-            setSelectedEmptyRow({ rowIndex: 0, col: NON_EDITABLE_COLS.has(col) ? (editableCols[0] ?? 'name') : col })
-            gridRef.current?.focus()
-          }, 0)
+      // 保存（fetch）の完了は待たず、オプティミスティック更新済みのUIに対して即座にフォーカス移動する。
+      void commitEdit(task)
+      const orderedIds = displayedTaskIdsRef.current
+      const taskIdx = orderedIds.indexOf(task.id)
+      if (taskIdx < orderedIds.length - 1) {
+        const nextTaskId = orderedIds[taskIdx + 1]
+        const nextTask = tasks.find((t) => t.id === nextTaskId)
+        if (nextTask) {
+          setSelectedCell({ taskId: nextTask.id, col })
+          setSelectedRowId(nextTask.id)
+          setSelectedRowIds(new Set([nextTask.id]))
+          gridRef.current?.focus()
         }
-      })
+      } else {
+        // Last task: move to first empty row in selected state (not edit mode),
+        // mirroring the behavior of Enter from a selected (non-editing) task.
+        const editableCols = columns.filter((c) => !NON_EDITABLE_COLS.has(c))
+        setSelectedCell(null)
+        setSelectedRowId(null)
+        setSelectedRowIds(new Set())
+        setSelectedEmptyRow({ rowIndex: 0, col: NON_EDITABLE_COLS.has(col) ? (editableCols[0] ?? 'name') : col })
+        gridRef.current?.focus()
+      }
     }
   }, [columns, tasks, openCell, commitEdit])
 
@@ -1739,8 +1737,27 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
 
       const json = await res.json() as { data: Task }
       // Replace the temp task with the real one from the server
+      const realId = json.data.id
       removeTask(tempId)
       upsertTask(json.data)
+      // Migrate any selection that still references the optimistic temp id to the
+      // real server id. Otherwise, once the temp row is removed above, the selected
+      // cell (selectedCell.taskId === tempId) no longer matches any rendered row,
+      // so the selection frame (isSelected_ in TaskRow) silently disappears — even
+      // though the cell content the user just cleared with Delete looks correct.
+      // This is why the frame vanishes after Delete on a freshly-created task while
+      // the create request is still in flight (i.e. before the id swap completes).
+      if (realId !== tempId) {
+        setSelectedCell((prev) => (prev?.taskId === tempId ? { ...prev, taskId: realId } : prev))
+        setSelectedRowId((prev) => (prev === tempId ? realId : prev))
+        setSelectedRowIds((prev) =>
+          prev.has(tempId)
+            ? new Set([...prev].map((id) => (id === tempId ? realId : id)))
+            : prev,
+        )
+        setSelectionAnchor((prev) => (prev?.taskId === tempId ? { ...prev, taskId: realId } : prev))
+        setSelectionHead((prev) => (prev?.taskId === tempId ? { ...prev, taskId: realId } : prev))
+      }
       committingRef.current = false
     } catch (err) {
       console.error('Failed to create task:', err)
@@ -2480,6 +2497,9 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
   const deleteSingleRow = useCallback(async (taskId: string): Promise<boolean> => {
     const task = storeTasks.find((t) => t.id === taskId)
     if (!task) return false
+    // 楽観更新: fetch を待たずにクリア後の値を即時反映する
+    const clearedTask = { ...task, name: '', start_date: null, end_date: null, progress: 0 } as Task
+    upsertTask(clearedTask)
     try {
       const res = await fetch('/api/tasks', {
         method: 'PATCH',
@@ -2498,10 +2518,14 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         upsertTask(json.data)
         return true
       }
+      // 失敗時ロールバック: 元の task に戻す
+      upsertTask(task as Task)
       const json = await res.json() as { error?: string }
       console.error('Failed to clear task:', json.error)
       return false
     } catch (err) {
+      // 例外時ロールバック: 元の task に戻す
+      upsertTask(task as Task)
       console.error('Failed to clear task:', err)
       return false
     }
@@ -3535,7 +3559,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
           if (permissions?.canEdit) {
             // deleteRow respects selectedRowIds for multi-row deletion
             void deleteRow(selectedCell.taskId)
-            setSelectedCell(null)
+            // deleteSingleRow は行を削除せず内容をクリアして同じ位置に残すため、
+            // 選択セルはクリアせず保持する。楽観更新の再レンダリングでグリッドが
+            // フォーカスを失うので、同じセル選択のままフォーカスを戻す。
+            gridRef.current?.focus()
+            requestAnimationFrame(() => gridRef.current?.focus())
           }
           return
         }
@@ -3559,6 +3587,11 @@ export function GanttLeftPanel({ tasks, rowHeight, columns, permissions, pushCom
         // Delete/Backspace alone: clear the selected cell(s)
         e.preventDefault()
         void handleCellDelete()
+        // handleCellDelete は selectedCell / selectedRowId(s) を変更しないため選択自体は保持されるが、
+        // 楽観更新(upsertTask)による再レンダリングでグリッド div がキーボードフォーカスを失う。
+        // 移動はせず同じセル選択を保ったまま、グリッドへフォーカスを戻す。
+        gridRef.current?.focus()
+        requestAnimationFrame(() => gridRef.current?.focus())
         return
       }
     }
